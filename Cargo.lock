@@ -676,6 +676,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "dcp-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "dcp-types",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "dcp-plugin-sdk"
 version = "0.1.0"
 dependencies = [

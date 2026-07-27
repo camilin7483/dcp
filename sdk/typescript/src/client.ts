@@ -1,7 +1,7 @@
 import * as net from "node:net";
 import * as path from "node:path";
 import * as os from "node:os";
-import type { ContextSnapshot, ContextSelector, EventType, Capability, SessionCreateResult, RpcRequest, RpcResponse } from "./types.js";
+import type { ContextSnapshot, ContextSelector, EventType, Capability, SessionCreateResult, RpcRequest, RpcResponse, AutomationCommand, AutomationResult, CaptureTarget, CaptureResult, OcrResult } from "./types.js";
 
 export interface DcpClientOptions {
   socketPath?: string;
@@ -106,6 +106,40 @@ export class DcpClient {
     return this.query(...allSelectors);
   }
 
+  async execute(command: AutomationCommand, dryRun = false): Promise<AutomationResult> {
+    return (await this.sendRequest("automation.execute", {
+      command,
+      dryRun,
+    })) as AutomationResult;
+  }
+
+  async capture(target: CaptureTarget, format = "png"): Promise<CaptureResult> {
+    return (await this.sendRequest("vision.capture", {
+      target,
+      format,
+    })) as CaptureResult;
+  }
+
+  async ocr(imageBase64: string, language = "eng"): Promise<OcrResult> {
+    return (await this.sendRequest("vision.ocr", {
+      imageBase64,
+      language,
+    })) as OcrResult;
+  }
+
+  async reconnect(maxRetries = 3): Promise<void> {
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        await this.close();
+        await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, i)));
+        await this.connect();
+        return;
+      } catch {
+        if (i === maxRetries - 1) throw;
+      }
+    }
+  }
+
   private async sendRequest(method: string, params: unknown): Promise<unknown> {
     if (!this.socket) {
       throw new DcpConnectionError("Not connected");
@@ -134,31 +168,37 @@ export class DcpClient {
 
     while (this.buffer.length >= 4) {
       const length = this.buffer.readUInt32BE(0);
-      if (this.buffer.length < 4 + length) break;
+      const totalLength = 4 + length;
 
-      const payload = this.buffer.subarray(4, 4 + length);
-      this.buffer = this.buffer.subarray(4 + length);
+      if (this.buffer.length < totalLength) break;
 
-      try {
-        const message = JSON.parse(payload.toString("utf-8"));
+      const payload = this.buffer.subarray(4, totalLength);
+      this.buffer = this.buffer.subarray(totalLength);
 
-        if (message.id !== undefined && this.pendingRequests.has(message.id)) {
-          const { resolve, reject } = this.pendingRequests.get(message.id)!;
-          this.pendingRequests.delete(message.id);
+      this.processMessage(payload);
+    }
+  }
 
-          if (message.error) {
-            reject(new Error(message.error.message));
-          } else {
-            resolve(message.result ?? null);
-          }
-        } else if (message.method === "event") {
-          for (const listener of this.eventListeners) {
-            listener(message.params);
-          }
+  private processMessage(payload: Buffer): void {
+    try {
+      const message = JSON.parse(payload.toString("utf-8"));
+
+      if (message.id !== undefined && this.pendingRequests.has(message.id)) {
+        const { resolve, reject } = this.pendingRequests.get(message.id)!;
+        this.pendingRequests.delete(message.id);
+
+        if (message.error) {
+          reject(new Error(message.error.message));
+        } else {
+          resolve(message.result ?? null);
         }
-      } catch {
-        // Skip malformed frames
+      } else if (message.method === "event") {
+        for (const listener of this.eventListeners) {
+          listener(message.params);
+        }
       }
+    } catch {
+      // Skip malformed frames
     }
   }
 

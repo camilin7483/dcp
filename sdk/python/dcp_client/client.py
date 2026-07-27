@@ -4,7 +4,7 @@ import asyncio
 import json
 import os
 import struct
-from typing import Any, Callable, Optional
+from typing import Any, AsyncIterator, Optional
 from pathlib import Path
 
 from .models import ContextSelector, EventType, Capability, ContextSnapshot
@@ -120,38 +120,23 @@ class DcpClient:
     async def subscribe(
         self,
         events: list[str],
-        callback: Callable[[dict], None],
         batch: bool = False,
-    ) -> str:
-        """Subscribe to events.
-
-        Args:
-            events: Event types to subscribe to.
-            callback: Called with each event dict.
-            batch: Whether to batch rapid events.
-
-        Returns:
-            Subscription ID.
-        """
+    ) -> AsyncIterator[dict]:
+        """Subscribe to events and yield them as an async iterator."""
         result = await self._send_request(
             "events.subscribe",
             {"events": events, "batch": batch},
         )
         sub_id = result.get("subscriptionId", "")
 
-        asyncio.create_task(self._listen_events(callback))
-        return sub_id
-
-    async def _listen_events(self, callback: Callable[[dict], None]) -> None:
-        if not self._reader:
-            return
+        # Listen for events on the same connection
         while True:
             try:
                 header = await self._reader.readexactly(4)
                 (length,) = struct.unpack(">I", header)
                 data = await self._reader.readexactly(length)
                 event = json.loads(data)
-                callback(event)
+                yield event
             except (asyncio.IncompleteReadError, ConnectionError):
                 break
 
@@ -167,3 +152,37 @@ class DcpClient:
             "context.get", {"selectors": all_selectors}
         )
         return ContextSnapshot.from_dict(result)
+
+    async def execute(self, command: dict, dry_run: bool = False) -> dict:
+        """Execute an automation command."""
+        return await self._send_request(
+            "automation.execute",
+            {"command": command, "dryRun": dry_run},
+        )
+
+    async def capture(self, target: dict, format: str = "png") -> dict:
+        """Capture screen/window/region."""
+        return await self._send_request(
+            "vision.capture",
+            {"target": target, "format": format},
+        )
+
+    async def ocr(self, image_base64: str, language: str = "eng") -> dict:
+        """Perform OCR on a base64-encoded image."""
+        return await self._send_request(
+            "vision.ocr",
+            {"imageBase64": image_base64, "language": language},
+        )
+
+    async def reconnect(self, max_retries: int = 3, delay: float = 1.0) -> None:
+        """Reconnect to the daemon with exponential backoff."""
+        for attempt in range(max_retries):
+            try:
+                await self.close()
+                await asyncio.sleep(delay * (2 ** attempt))
+                await self.connect()
+                return
+            except DcpConnectionError:
+                if attempt == max_retries - 1:
+                    raise
+        raise DcpConnectionError("Failed to reconnect after max retries")

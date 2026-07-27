@@ -180,3 +180,40 @@ export interface SessionCreateResult {
   deniedCapabilities: Capability[];
   requiresApproval: boolean;
 }
+
+export interface AutomationCommand {
+  type: string;
+  [key: string]: unknown;
+}
+
+export interface AutomationResult {
+  success: boolean;
+  message?: string;
+}
+
+export interface CaptureTarget {
+  type: "screen" | "window" | "region";
+  monitorId?: number;
+  windowId?: number;
+  bounds?: { x: number; y: number; width: number; height: number };
+}
+
+export interface CaptureResult {
+  width: number;
+  height: number;
+  format: string;
+  dataBase64: string;
+  timestamp: number;
+}
+
+export interface OcrParams {
+  imageBase64: string;
+  language?: string;
+  region?: { x: number; y: number; width: number; height: number };
+}
+
+export interface OcrResult {
+  text: string;
+  confidence: number;
+  textBoxes: Array<{ bounds: Rect; text: string; confidence: number }>;
+}
