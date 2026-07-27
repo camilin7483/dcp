@@ -81,3 +81,90 @@ impl AuditLogger {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn test_logger() -> AuditLogger {
+        let dir = std::env::temp_dir().join(format!("dcp_audit_test_{}", uuid::Uuid::new_v4()));
+        AuditLogger::new(dir)
+    }
+
+    #[tokio::test]
+    async fn test_log_allowed() {
+        let logger = test_logger();
+        logger.log_allowed("session-1", Some("context.get"), "selectors: [activeWindow]");
+
+        // Verify file was created
+        let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let path = logger.log_dir.join(format!("audit-{date}.jsonl"));
+        assert!(path.exists(), "Audit file should exist");
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("session-1"));
+        assert!(content.contains("context.get"));
+        assert!(content.contains("allowed"));
+    }
+
+    #[tokio::test]
+    async fn test_log_denied() {
+        let logger = test_logger();
+        logger.log_denied("session-2", Some("automation.execute"), "missing capability");
+
+        let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let path = logger.log_dir.join(format!("audit-{date}.jsonl"));
+        assert!(path.exists());
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("session-2"));
+        assert!(content.contains("denied"));
+        assert!(content.contains("missing capability"));
+    }
+
+    #[test]
+    fn test_log_dir_created() {
+        let dir = std::env::temp_dir().join(format!("dcp_audit_create_test_{}", uuid::Uuid::new_v4()));
+        assert!(!dir.exists());
+        let _logger = AuditLogger::new(dir.clone());
+        assert!(dir.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_log_without_method() {
+        let logger = test_logger();
+        logger.log_allowed("session-3", None, "session created");
+
+        let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let path = logger.log_dir.join(format!("audit-{date}.jsonl"));
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("\"method\":null"));
+    }
+
+    #[tokio::test]
+    async fn test_log_json_format() {
+        let logger = test_logger();
+        logger.log_allowed("session-4", Some("test.method"), "test details");
+
+        let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let path = logger.log_dir.join(format!("audit-{date}.jsonl"));
+        let content = std::fs::read_to_string(&path).unwrap();
+
+        // Verify valid JSON
+        let parsed: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(parsed["sessionId"], "session-4");
+        assert_eq!(parsed["method"], "test.method");
+        assert_eq!(parsed["outcome"], "allowed");
+        assert!(parsed["timestamp"].as_i64().is_some());
+    }
+
+    // Clean up test directories
+    struct AuditDirCleanup(PathBuf);
+    impl Drop for AuditDirCleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+}

@@ -188,3 +188,65 @@ fn parse_png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
     let height = u32::from_be_bytes([data[20], data[21], data[22], data[23]]);
     Some((width, height))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_png_dimensions_valid() {
+        // Minimal valid PNG: 8-byte signature + IHDR chunk
+        // 1x1 pixel, 8-bit grayscale
+        let mut png = vec![
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
+            0x00, 0x00, 0x00, 0x0D, // chunk length = 13
+            0x49, 0x48, 0x44, 0x52, // "IHDR"
+            0x00, 0x00, 0x00, 0x01, // width = 1
+            0x00, 0x00, 0x00, 0x01, // height = 1
+            0x08, 0x00, 0x00, 0x00, 0x00, // bit depth, color type, etc
+        ];
+        // CRC (needs to be valid enough to not panic)
+        png.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+
+        let (w, h) = parse_png_dimensions(&png).unwrap_or((0, 0));
+        assert_eq!(w, 1);
+        assert_eq!(h, 1);
+    }
+
+    #[test]
+    fn test_parse_png_dimensions_larger() {
+        let mut png = vec![
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+            0x00, 0x00, 0x00, 0x0D,
+            0x49, 0x48, 0x44, 0x52,
+            0x00, 0x00, 0x05, 0xA0, // width = 1440
+            0x00, 0x00, 0x03, 0x84, // height = 900
+            0x08, 0x02, 0x00, 0x00, 0x00,
+        ];
+        png.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+
+        let (w, h) = parse_png_dimensions(&png).unwrap_or((0, 0));
+        assert_eq!(w, 1440);
+        assert_eq!(h, 900);
+    }
+
+    #[test]
+    fn test_parse_png_dimensions_too_short() {
+        let data = vec![0x00; 10];
+        let result = parse_png_dimensions(&data);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_png_dimensions_not_png() {
+        let data = vec![0x00; 30]; // Invalid signature
+        let result = parse_png_dimensions(&data);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_png_dimensions_empty() {
+        let result = parse_png_dimensions(&[]);
+        assert!(result.is_none());
+    }
+}

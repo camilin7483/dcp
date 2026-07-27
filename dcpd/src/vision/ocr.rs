@@ -79,7 +79,14 @@ fn parse_hocr(hocr: &str) -> Vec<TextBox> {
                 .split_whitespace()
                 .skip(1)
                 .take(4)
-                .filter_map(|s| s.trim_end_matches(';').parse().ok())
+                .filter_map(|s| {
+                    s.trim_end_matches(';')
+                        .chars()
+                        .take_while(|c| c.is_ascii_digit() || *c == '-')
+                        .collect::<String>()
+                        .parse()
+                        .ok()
+                })
                 .collect();
 
             if numbers.len() == 4 {
@@ -93,14 +100,20 @@ fn parse_hocr(hocr: &str) -> Vec<TextBox> {
                     conf_str
                         .split_whitespace()
                         .nth(1)
-                        .and_then(|s| s.trim_end_matches('\'').parse::<f64>().ok())
+                        .and_then(|s| {
+                            s.chars()
+                                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                                .collect::<String>()
+                                .parse::<f64>()
+                                .ok()
+                        })
                         .unwrap_or(0.0)
                         / 100.0
                 } else {
                     0.0
                 };
 
-                let text = if let Some(gt_pos) = line.rfind('>') {
+                let text = if let Some(gt_pos) = line.find('>') {
                     let text_part = &line[gt_pos + 1..];
                     text_part.split('<').next().unwrap_or("").trim().to_string()
                 } else {
@@ -123,4 +136,78 @@ fn parse_hocr(hocr: &str) -> Vec<TextBox> {
 
 pub fn is_available() -> bool {
     tesseract::Tesseract::new(Some(""), Some("eng")).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_hocr_basic() {
+        let hocr = r#"
+<span class='ocrx_word' title='bbox 0 0 100 20; x_wconf 95'>Hello</span>
+<span class='ocrx_word' title='bbox 100 0 200 20; x_wconf 90'>World</span>
+"#;
+        let boxes = parse_hocr(hocr);
+        assert_eq!(boxes.len(), 2);
+        assert_eq!(boxes[0].text, "Hello");
+        assert_eq!(boxes[0].confidence, 0.95);
+        assert_eq!(boxes[0].bounds, Rect::new(0, 0, 100, 20));
+        assert_eq!(boxes[1].text, "World");
+        assert_eq!(boxes[1].confidence, 0.90);
+    }
+
+    #[test]
+    fn test_parse_hocr_empty() {
+        let boxes = parse_hocr("");
+        assert!(boxes.is_empty());
+    }
+
+    #[test]
+    fn test_parse_hocr_no_ocrx_word() {
+        let hocr = "<p>Some text without ocrx_word</p>";
+        let boxes = parse_hocr(hocr);
+        assert!(boxes.is_empty());
+    }
+
+    #[test]
+    fn test_parse_hocr_missing_bbox() {
+        let hocr = "<span class='ocrx_word'>No bbox here</span>";
+        let boxes = parse_hocr(hocr);
+        assert!(boxes.is_empty());
+    }
+
+    #[test]
+    fn test_parse_hocr_partial_bbox() {
+        let hocr = "<span class='ocrx_word' title='bbox 0 0 100'>Incomplete</span>";
+        let boxes = parse_hocr(hocr);
+        assert!(boxes.is_empty());
+    }
+
+    #[test]
+    fn test_parse_hocr_without_confidence() {
+        let hocr = "<span class='ocrx_word' title='bbox 0 0 50 20'>NoConf</span>";
+        let boxes = parse_hocr(hocr);
+        assert_eq!(boxes.len(), 1);
+        assert_eq!(boxes[0].confidence, 0.0);
+    }
+
+    #[test]
+    fn test_parse_hocr_multiple_lines() {
+        let hocr = r#"
+<span class='ocrx_word' title='bbox 0 0 30 15; x_wconf 85'>Line1</span>
+<span class='ocrx_word' title='bbox 0 15 40 30; x_wconf 75'>Line2</span>
+<span class='ocrx_word' title='bbox 0 30 35 45; x_wconf 88'>Line3</span>
+"#;
+        let boxes = parse_hocr(hocr);
+        assert_eq!(boxes.len(), 3);
+    }
+
+    #[test]
+    fn test_parse_hocr_handles_bad_confidence_value() {
+        let hocr = "<span class='ocrx_word' title='bbox 0 0 50 20; x_wconf invalid'>Bad</span>";
+        let boxes = parse_hocr(hocr);
+        assert_eq!(boxes.len(), 1);
+        assert_eq!(boxes[0].confidence, 0.0);
+    }
 }

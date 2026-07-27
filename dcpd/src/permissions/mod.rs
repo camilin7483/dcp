@@ -32,6 +32,12 @@ impl PermissionManager {
         }
     }
 
+    pub fn with_secret(secret: &str) -> Self {
+        Self {
+            hmac_secret: Arc::new(secret.as_bytes().to_vec()),
+        }
+    }
+
     pub fn verify_session_capability(
         &self,
         session: &Session,
@@ -80,7 +86,6 @@ impl PermissionManager {
         use hmac::{Hmac, Mac};
         use sha2::Sha256;
 
-        let now = chrono::Utc::now().timestamp();
         let perm_hash = {
             let mut s = String::new();
             for c in capabilities {
@@ -90,24 +95,45 @@ impl PermissionManager {
             base64::engine::general_purpose::STANDARD.encode(s.as_bytes())
         };
 
-        let payload = format!("{session_id}|{perm_hash}|{now}|{expires_at}");
+        let payload = format!("{session_id}|{perm_hash}|{expires_at}");
         let mut mac =
             Hmac::<Sha256>::new_from_slice(&self.hmac_secret).expect("HMAC key length is valid");
         mac.update(payload.as_bytes());
         let signature =
             base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
 
-        format!("dcp_v1.{session_id}.{perm_hash}.{signature}")
+        format!("dcp_v1.{session_id}.{perm_hash}.{expires_at}.{signature}")
     }
 
     pub fn validate_token(&self, token: &str) -> Option<(String, Vec<Capability>)> {
-        let parts: Vec<&str> = token.splitn(4, '.').collect();
-        if parts.len() != 4 || parts[0] != "dcp_v1" {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+
+        let parts: Vec<&str> = token.splitn(5, '.').collect();
+        if parts.len() != 5 || parts[0] != "dcp_v1" {
             return None;
         }
 
         let session_id = parts[1];
         let perm_hash_b64 = parts[2];
+        let expires_at_str = parts[3];
+        let signature_b64 = parts[4];
+
+        let expires_at: i64 = expires_at_str.parse().ok()?;
+        if chrono::Utc::now().timestamp() > expires_at {
+            return None;
+        }
+
+        let payload = format!("{session_id}|{perm_hash_b64}|{expires_at}");
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(&self.hmac_secret).expect("HMAC key length is valid");
+        mac.update(payload.as_bytes());
+        let expected_signature =
+            base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
+
+        if signature_b64 != expected_signature {
+            return None;
+        }
 
         let perm_bytes = base64::engine::general_purpose::STANDARD
             .decode(perm_hash_b64)
@@ -121,5 +147,142 @@ impl PermissionManager {
             .collect();
 
         Some((session_id.to_string(), capabilities))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server::session::Session;
+    use dcp_types::{Capability, Encoding};
+
+    fn make_test_session(caps: Vec<Capability>, expired: bool) -> Session {
+        let created = if expired {
+            chrono::Utc::now().timestamp() - 7200
+        } else {
+            chrono::Utc::now().timestamp()
+        };
+        Session {
+            id: "test-session".to_string(),
+            client_name: Some("test-client".to_string()),
+            capabilities: caps,
+            encoding: Encoding::Json,
+            created_at: created,
+            expires_at: created + 3600,
+            remote_address: None,
+        }
+    }
+
+    #[test]
+    fn test_verify_session_capability_allowed() {
+        let session = make_test_session(vec![Capability::ContextWindowsRead], false);
+        let pm = PermissionManager::with_secret("test-secret");
+        assert!(pm.verify_session_capability(&session, &Capability::ContextWindowsRead).is_ok());
+    }
+
+    #[test]
+    fn test_verify_session_capability_denied() {
+        let session = make_test_session(vec![Capability::ContextClipboardRead], false);
+        let pm = PermissionManager::with_secret("test-secret");
+        let result = pm.verify_session_capability(&session, &Capability::ContextWindowsRead);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), ErrorCode::PermissionDenied);
+    }
+
+    #[test]
+    fn test_verify_session_capability_expired() {
+        let session = make_test_session(vec![Capability::ContextWindowsRead], true);
+        let pm = PermissionManager::with_secret("test-secret");
+        let result = pm.verify_session_capability(&session, &Capability::ContextWindowsRead);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), ErrorCode::SessionExpired);
+    }
+
+    #[test]
+    fn test_create_token_validates() {
+        let pm = PermissionManager::with_secret("test-secret");
+        let caps = vec![Capability::ContextWindowsRead, Capability::AutomationMouseWrite];
+        let token = pm.create_token("session-1", &caps, chrono::Utc::now().timestamp() + 3600);
+
+        let result = pm.validate_token(&token);
+        assert!(result.is_some());
+        let (sid, decoded_caps) = result.unwrap();
+        assert_eq!(sid, "session-1");
+        assert_eq!(decoded_caps.len(), 2);
+        assert!(decoded_caps.contains(&Capability::ContextWindowsRead));
+    }
+
+    #[test]
+    fn test_validate_invalid_token() {
+        let pm = PermissionManager::with_secret("test-secret");
+        let result = pm.validate_token("invalid-token");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_validate_tampered_token() {
+        let pm = PermissionManager::with_secret("test-secret");
+        let caps = vec![Capability::ContextWindowsRead];
+        let token = pm.create_token("session-1", &caps, chrono::Utc::now().timestamp() + 3600);
+
+        // Tamper with the token
+        let mut parts: Vec<&str> = token.split('.').collect();
+        if let Some(last) = parts.last_mut() {
+            *last = "tampered-signature";
+        }
+        let tampered = parts.join(".");
+
+        let result = pm.validate_token(&tampered);
+        assert!(result.is_none(), "Tampered token should be rejected");
+    }
+
+    #[test]
+    fn test_verify_multiple_capabilities() {
+        let session = make_test_session(vec![
+            Capability::ContextWindowsRead,
+            Capability::ContextClipboardRead,
+        ], false);
+        let pm = PermissionManager::with_secret("test-secret");
+
+        let result = pm.verify_session_capabilities(&session, &[
+            Capability::ContextWindowsRead,
+            Capability::ContextClipboardRead,
+        ]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_verify_multiple_fails_on_missing_one() {
+        let session = make_test_session(vec![
+            Capability::ContextWindowsRead,
+        ], false);
+        let pm = PermissionManager::with_secret("test-secret");
+
+        let result = pm.verify_session_capabilities(&session, &[
+            Capability::ContextWindowsRead,
+            Capability::AutomationMouseWrite, // not granted
+        ]);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), ErrorCode::PermissionDenied);
+    }
+
+    #[test]
+    fn test_expired_token() {
+        let pm = PermissionManager::with_secret("test-secret");
+        let expired_time = chrono::Utc::now().timestamp() - 100; // already expired
+        let token = pm.create_token("session-1", &[], expired_time);
+
+        let result = pm.validate_token(&token);
+        assert!(result.is_none(), "Expired token should be rejected");
+    }
+
+    #[test]
+    fn test_different_secrets_dont_match() {
+        let pm1 = PermissionManager::with_secret("secret-1");
+        let pm2 = PermissionManager::with_secret("secret-2");
+
+        let token = pm1.create_token("session-1", &[], chrono::Utc::now().timestamp() + 3600);
+        let result = pm2.validate_token(&token);
+        assert!(result.is_none(), "Token from different secret should be rejected");
     }
 }

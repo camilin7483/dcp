@@ -121,3 +121,85 @@ impl MetricsRegistry {
         self.start_time.elapsed().as_secs()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_counter_increment() {
+        let registry = MetricsRegistry::new();
+        registry.increment_counter("test_counter", 5).await;
+
+        let snapshot = registry.snapshot(registry.uptime_secs()).await;
+        let counters = snapshot["counters"].as_object().unwrap();
+        assert_eq!(counters["test_counter"].as_u64(), Some(5));
+    }
+
+    #[tokio::test]
+    async fn test_gauge_set() {
+        let registry = MetricsRegistry::new();
+        registry.set_gauge("test_gauge", 42.5).await;
+
+        let snapshot = registry.snapshot(registry.uptime_secs()).await;
+        let gauges = snapshot["gauges"].as_object().unwrap();
+        assert_eq!(gauges["test_gauge"].as_f64(), Some(42.5));
+    }
+
+    #[tokio::test]
+    async fn test_histogram_record() {
+        let registry = MetricsRegistry::new();
+        registry.observe_histogram("test_hist", 0.05).await;
+        registry.observe_histogram("test_hist", 0.5).await;
+        registry.observe_histogram("test_hist", 2.0).await;
+
+        let snapshot = registry.snapshot(registry.uptime_secs()).await;
+        let hist = snapshot["histograms"]["test_hist"].as_object().unwrap();
+        assert_eq!(hist["total"].as_u64(), Some(3));
+        let avg = hist["avg"].as_f64().unwrap();
+        assert!((avg - 0.85).abs() < 0.01, "avg should be ~0.85, got {avg}");
+    }
+
+    #[tokio::test]
+    async fn test_uptime_increases() {
+        let registry = MetricsRegistry::new();
+        let u1 = registry.uptime_secs();
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let u2 = registry.uptime_secs();
+        assert!(u2 >= u1, "uptime should increase");
+    }
+
+    #[tokio::test]
+    async fn test_histogram_empty() {
+        let registry = MetricsRegistry::new();
+        let snapshot = registry.snapshot(0).await;
+        let histograms = snapshot["histograms"].as_object().unwrap();
+        assert!(histograms.is_empty(), "No histograms should exist");
+    }
+
+    #[tokio::test]
+    async fn test_histogram_buckets() {
+        let registry = MetricsRegistry::new();
+        registry.observe_histogram("latency", 0.003).await;
+        registry.observe_histogram("latency", 0.03).await;
+        registry.observe_histogram("latency", 0.3).await;
+
+        let snapshot = registry.snapshot(0).await;
+        let hist = &snapshot["histograms"]["latency"];
+        let counts = hist["counts"].as_array().unwrap();
+
+        // Buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0]
+        // 0.003 fits in bucket 0.005 and above
+        // 0.03 fits in bucket 0.05 and above
+        // 0.3 fits in bucket 0.5 and above
+        assert!(counts[1].as_u64().unwrap_or(0) == 1, "0.005 bucket should have 1");
+        assert!(counts[5].as_u64().unwrap_or(0) == 3, "0.5 bucket should have 3");
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_uptime() {
+        let registry = MetricsRegistry::new();
+        let snapshot = registry.snapshot(12345).await;
+        assert_eq!(snapshot["uptime_seconds"].as_u64(), Some(12345));
+    }
+}
