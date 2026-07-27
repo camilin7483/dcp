@@ -7,7 +7,7 @@ use anyhow::Result;
 use dcp_types::{VisionOcrParams, VisionOcrResult, TextBox, Rect};
 
 /// Perform OCR on a base64-encoded image.
-pub fn ocr_image(params: &VisionOcrParams) -> Result<VisionOcrResult> {
+pub async fn ocr_image(params: &VisionOcrParams) -> Result<VisionOcrResult> {
     use base64::Engine;
     use image::GenericImageView;
 
@@ -47,7 +47,7 @@ pub fn ocr_image(params: &VisionOcrParams) -> Result<VisionOcrResult> {
         img.clone()
     };
 
-    let temp_path = std::env::temp_dir().join("dcp_ocr_input.png");
+    let temp_path = std::env::temp_dir().join(format!("dcp_ocr_{}.png", uuid::Uuid::new_v4()));
     cropped.save(&temp_path)?;
 
     let lang = params.language.as_deref().unwrap_or("eng");

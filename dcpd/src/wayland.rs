@@ -43,18 +43,11 @@ impl WaylandBackend {
 
     /// Get active window (stub - would use wlr-foreign-toplevel).
     pub async fn active_window(&self) -> Result<ActiveWindowInfo> {
-        // In a full implementation, this would:
-        // 1. Connect to Wayland display
-        // 2. Bind to wlr-foreign-toplevel-manager
-        // 3. Listen for toplevel events
-        // 4. Track focused window
-        
-        // For now, fall back to xdotool if XWayland is available
         warn!("Wayland native window tracking not fully implemented, falling back to XWayland");
         
-        let output = std::process::Command::new("xdotool")
+        let output = tokio::process::Command::new("xdotool")
             .args(["getactivewindow", "getwindowname"])
-            .output()?;
+            .output().await?;
         
         let title = String::from_utf8_lossy(&output.stdout).trim().to_string();
         
@@ -79,9 +72,9 @@ impl WaylandBackend {
     pub async fn capture_screen(&self) -> Result<Vec<u8>> {
         warn!("Wayland native screen capture not fully implemented, using grim fallback");
         
-        let output = std::process::Command::new("grim")
+        let output = tokio::process::Command::new("grim")
             .args(["-t", "png", "-"])
-            .output()?;
+            .output().await?;
         
         Ok(output.stdout)
     }
@@ -139,15 +132,15 @@ pub mod sway {
         let length = payload.len() as u32;
         
         stream.write_all(magic)?;
-        stream.write_all(&length.to_ne_bytes())?;
-        stream.write_all(&request_type.to_ne_bytes())?;
+        stream.write_all(&length.to_le_bytes())?;
+        stream.write_all(&request_type.to_le_bytes())?;
         stream.write_all(payload.as_bytes())?;
         
         // Read response
         let mut header = [0u8; 14]; // magic(6) + length(4) + type(4)
         stream.read_exact(&mut header)?;
         
-        let length = u32::from_ne_bytes([header[6], header[7], header[8], header[9]]) as usize;
+        let length = u32::from_le_bytes([header[6], header[7], header[8], header[9]]) as usize;
         let mut response = vec![0u8; length];
         stream.read_exact(&mut response)?;
         

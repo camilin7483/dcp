@@ -3,11 +3,11 @@
 //! Uses xdotool/xprop for X11, /proc for process info,
 //! xclip/wl-paste for clipboard, and inotify for file watching.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use dcp_types::*;
 use serde::Deserialize;
-use std::process::Command;
+use tokio::task;
 use tracing::warn;
 
 use super::PlatformBackend;
@@ -109,37 +109,56 @@ impl LinuxBackend {
         Ok(Self { session_type })
     }
 
-    fn xdotool_output(args: &[&str]) -> Result<String> {
-        let output = Command::new("xdotool")
-            .args(args)
-            .output()?;
+    async fn read_proc_file<T, F>(path: &str, parser: F) -> T
+    where
+        F: FnOnce(&str) -> T + Send + 'static,
+        T: Send + Default + 'static,
+    {
+        let path = path.to_string();
+        task::spawn_blocking(move || {
+            match std::fs::read_to_string(&path) {
+                Ok(content) => parser(&content),
+                Err(_) => T::default(),
+            }
+        })
+        .await
+        .unwrap_or_default()
+    }
+
+    async fn xdotool_output(args: &[&str]) -> Result<String> {
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let output = tokio::process::Command::new("xdotool")
+            .args(&args)
+            .output().await?;
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
-    fn xprop_output(args: &[&str]) -> Result<String> {
-        let output = Command::new("xprop")
-            .args(args)
-            .output()?;
+    async fn xprop_output(args: &[&str]) -> Result<String> {
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let output = tokio::process::Command::new("xprop")
+            .args(&args)
+            .output().await?;
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
-    fn get_window_info_x11(window_id: &str) -> Result<WindowInfo> {
+    async fn get_window_info_x11(window_id: &str) -> Result<WindowInfo> {
         let wid = window_id.trim();
 
         let title = Self::xdotool_output(&["getwindowname", wid])
+            .await
             .unwrap_or_default();
 
         let pid_str = Self::xdotool_output(&["getwindowpid", wid])
+            .await
             .unwrap_or_else(|_| "0".to_string());
         let pid: u32 = pid_str.parse().unwrap_or(0);
 
-        let app = std::fs::read_to_string(format!("/proc/{pid}/comm"))
-            .unwrap_or_default()
-            .trim()
-            .to_string();
+        let app = Self::read_proc_file(&format!("/proc/{pid}/comm"), |c| {
+            c.trim().to_string()
+        }).await;
 
-        // Get geometry
         let geo = Self::xdotool_output(&["getwindowgeometry", "--shell", wid])
+            .await
             .unwrap_or_default();
 
         let mut x = 0i32;
@@ -159,7 +178,7 @@ impl LinuxBackend {
             }
         }
 
-        let focused_id = Self::xdotool_output(&["getactivewindow"]).unwrap_or_default();
+        let focused_id = Self::xdotool_output(&["getactivewindow"]).await.unwrap_or_default();
         let is_focused = focused_id == wid;
 
         Ok(WindowInfo {
@@ -179,40 +198,42 @@ impl LinuxBackend {
         })
     }
 
-    fn read_meminfo() -> (u64, u64) {
-        let content = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
-        let mut total_kb = 0u64;
-        let mut available_kb = 0u64;
+    async fn read_meminfo() -> (u64, u64) {
+        Self::read_proc_file("/proc/meminfo", |content| {
+            let mut total_kb = 0u64;
+            let mut available_kb = 0u64;
 
-        for line in content.lines() {
-            if line.starts_with("MemTotal:") {
-                total_kb = line.split_whitespace()
-                    .nth(1)
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(0);
-            } else if line.starts_with("MemAvailable:") {
-                available_kb = line.split_whitespace()
-                    .nth(1)
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(0);
+            for line in content.lines() {
+                if line.starts_with("MemTotal:") {
+                    total_kb = line.split_whitespace()
+                        .nth(1)
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0);
+                } else if line.starts_with("MemAvailable:") {
+                    available_kb = line.split_whitespace()
+                        .nth(1)
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0);
+                }
             }
-        }
 
-        (total_kb / 1024, available_kb / 1024)
+            (total_kb / 1024, available_kb / 1024)
+        }).await
     }
 
-    fn read_load_average() -> Option<[f64; 3]> {
-        let content = std::fs::read_to_string("/proc/loadavg").ok()?;
-        let parts: Vec<f64> = content
-            .split_whitespace()
-            .take(3)
-            .filter_map(|p| p.parse().ok())
-            .collect();
-        if parts.len() == 3 {
-            Some([parts[0], parts[1], parts[2]])
-        } else {
-            None
-        }
+    async fn read_load_average() -> Option<[f64; 3]> {
+        Self::read_proc_file("/proc/loadavg", |content| {
+            let parts: Vec<f64> = content
+                .split_whitespace()
+                .take(3)
+                .filter_map(|p| p.parse().ok())
+                .collect();
+            if parts.len() == 3 {
+                Some([parts[0], parts[1], parts[2]])
+            } else {
+                None
+            }
+        }).await
     }
 
     fn is_hyprland(&self) -> bool {
@@ -220,10 +241,11 @@ impl LinuxBackend {
             && std::env::var("HYPRLAND_INSTANCE_SIGNATURE").is_ok()
     }
 
-    fn hyprctl(args: &[&str]) -> Result<String> {
-        let output = Command::new("hyprctl")
-            .args(args)
-            .output()?;
+    async fn hyprctl(args: &[&str]) -> Result<String> {
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let output = tokio::process::Command::new("hyprctl")
+            .args(&args)
+            .output().await?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!("hyprctl failed: {stderr}");
@@ -231,8 +253,8 @@ impl LinuxBackend {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
-    fn hyprctl_json<T: serde::de::DeserializeOwned>(args: &[&str]) -> Result<T> {
-        let json = Self::hyprctl(args)?;
+    async fn hyprctl_json<T: serde::de::DeserializeOwned>(args: &[&str]) -> Result<T> {
+        let json = Self::hyprctl(args).await?;
         Ok(serde_json::from_str(&json)?)
     }
 
@@ -256,24 +278,24 @@ impl LinuxBackend {
         Some(format!("Working in: {title}"))
     }
 
-    fn read_cpu_usage() -> f64 {
-        // Simple: read /proc/stat once
-        let content = std::fs::read_to_string("/proc/stat").unwrap_or_default();
-        if let Some(first_line) = content.lines().next() {
-            let parts: Vec<u64> = first_line
-                .split_whitespace()
-                .skip(1)
-                .filter_map(|p| p.parse().ok())
-                .collect();
-            if parts.len() >= 4 {
-                let total: u64 = parts.iter().sum();
-                let idle = parts.get(3).copied().unwrap_or(0);
-                if total > 0 {
-                    return ((total - idle) as f64 / total as f64) * 100.0;
+    async fn read_cpu_usage() -> f64 {
+        Self::read_proc_file("/proc/stat", |content| {
+            if let Some(first_line) = content.lines().next() {
+                let parts: Vec<u64> = first_line
+                    .split_whitespace()
+                    .skip(1)
+                    .filter_map(|p| p.parse().ok())
+                    .collect();
+                if parts.len() >= 4 {
+                    let total: u64 = parts.iter().copied().map(|v| v).sum();
+                    let idle = parts.get(3).copied().unwrap_or(0);
+                    if total > 0 {
+                        return ((total.saturating_sub(idle)) as f64 / total as f64) * 100.0;
+                    }
                 }
             }
-        }
-        0.0
+            0.0
+        }).await
     }
 }
 
@@ -283,6 +305,7 @@ impl PlatformBackend for LinuxBackend {
         match self.session_type {
             SessionType::X11 => {
                 let wid = Self::xdotool_output(&["getactivewindow"])
+                    .await
                     .unwrap_or_default();
                 if wid.is_empty() {
                     return Ok(ActiveWindowInfo {
@@ -297,18 +320,23 @@ impl PlatformBackend for LinuxBackend {
                 }
 
                 let title = Self::xdotool_output(&["getwindowname", &wid])
+                    .await
                     .unwrap_or_default();
 
                 let pid_str = Self::xdotool_output(&["getwindowpid", &wid])
+                    .await
                     .unwrap_or_else(|_| "0".to_string());
                 let pid: u32 = pid_str.parse().unwrap_or(0);
 
-                let app = std::fs::read_to_string(format!("/proc/{pid}/comm"))
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
+                let app = task::spawn_blocking(move || {
+                    std::fs::read_to_string(format!("/proc/{pid}/comm"))
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string()
+                }).await.unwrap_or_default();
 
                 let geo = Self::xdotool_output(&["getwindowgeometry", "--shell", &wid])
+                    .await
                     .unwrap_or_default();
 
                 let mut x = 0i32;
@@ -353,7 +381,7 @@ impl PlatformBackend for LinuxBackend {
             }
             SessionType::Wayland => {
                 if self.is_hyprland() {
-                    match Self::hyprctl_json::<HyprWindow>(&["activewindow", "-j"]) {
+                    match Self::hyprctl_json::<HyprWindow>(&["activewindow", "-j"]).await {
                         Ok(w) => {
                             let semantic = Self::semantic_context_for(&w.title, &w.class);
                             let wid = u64::from_str_radix(
@@ -401,6 +429,7 @@ impl PlatformBackend for LinuxBackend {
         match self.session_type {
             SessionType::X11 => {
                 let output = Self::xdotool_output(&["search", "--onlyvisible", "--name", ""])
+                    .await
                     .unwrap_or_default();
 
                 let mut windows = Vec::new();
@@ -409,7 +438,7 @@ impl PlatformBackend for LinuxBackend {
                     if wid.is_empty() {
                         continue;
                     }
-                    if let Ok(info) = Self::get_window_info_x11(wid) {
+                    if let Ok(info) = Self::get_window_info_x11(wid).await {
                         windows.push(info);
                     }
                 }
@@ -417,9 +446,10 @@ impl PlatformBackend for LinuxBackend {
             }
             SessionType::Wayland if self.is_hyprland() => {
                 let clients: Vec<HyprWindow> = Self::hyprctl_json(&["clients", "-j"])
+                    .await
                     .unwrap_or_default();
 
-                let active: Option<HyprWindow> = Self::hyprctl_json(&["activewindow", "-j"]).ok();
+                let active: Option<HyprWindow> = Self::hyprctl_json(&["activewindow", "-j"]).await.ok();
                 let active_addr = active.as_ref().map(|w| w.address.as_str()).unwrap_or("");
 
                 Ok(clients
@@ -456,101 +486,112 @@ impl PlatformBackend for LinuxBackend {
     }
 
     async fn running_processes(&self) -> Result<Vec<ProcessInfo>> {
-        let mut processes = Vec::new();
+        task::spawn_blocking(|| -> Result<Vec<ProcessInfo>> {
+            let mut processes = Vec::new();
 
-        for entry in std::fs::read_dir("/proc")? {
-            let entry = entry?;
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
+            let dir = match std::fs::read_dir("/proc") {
+                Ok(d) => d,
+                Err(e) => return Err(anyhow::anyhow!("Failed to read /proc: {e}")),
+            };
 
-            if let Ok(pid) = name_str.parse::<u32>() {
-                let comm = match std::fs::read_to_string(format!("/proc/{pid}/comm")) {
-                    Ok(c) => c.trim().to_string(),
+            for entry in dir {
+                let entry = match entry {
+                    Ok(e) => e,
                     Err(_) => continue,
                 };
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
 
-                let exe = std::fs::read_link(format!("/proc/{pid}/exe"))
-                    .ok()
-                    .map(|p| p.to_string_lossy().to_string());
+                if let Ok(pid) = name_str.parse::<u32>() {
+                    let comm = match std::fs::read_to_string(format!("/proc/{pid}/comm")) {
+                        Ok(c) => c.trim().to_string(),
+                        Err(_) => continue,
+                    };
 
-                let cmdline = std::fs::read_to_string(format!("/proc/{pid}/cmdline"))
-                    .ok()
-                    .map(|s| s.replace('\0', " ").trim().to_string());
+                    let exe = std::fs::read_link(format!("/proc/{pid}/exe"))
+                        .ok()
+                        .map(|p| p.to_string_lossy().to_string());
 
-                // Read /proc/{pid}/stat for memory and CPU
-                let stat_content = std::fs::read_to_string(format!("/proc/{pid}/stat"))
-                    .unwrap_or_default();
-                let stat_parts: Vec<&str> = stat_content.rsplitn(2, ')').collect();
-                let mut memory_mb = 0u64;
-                let mut status = ProcessStatus::Unknown;
+                    let cmdline = std::fs::read_to_string(format!("/proc/{pid}/cmdline"))
+                        .ok()
+                        .map(|s| s.replace('\0', " ").trim().to_string());
 
-                if stat_parts.len() >= 2 {
-                    let fields: Vec<&str> = stat_parts[0].split_whitespace().collect();
-                    if fields.len() >= 24 {
-                        // RSS in pages (field 23, 0-indexed from after ')')
-                        let rss_pages: u64 = fields.get(21)
-                            .and_then(|v| v.parse().ok())
-                            .unwrap_or(0);
-                        memory_mb = (rss_pages * 4096) / (1024 * 1024);
+                    let stat_content = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                        .unwrap_or_default();
+                    let stat_parts: Vec<&str> = stat_content.rsplitn(2, ')').collect();
+                    let mut memory_mb = 0u64;
+                    let mut status = ProcessStatus::Unknown;
 
-                        // State character (field 2)
-                        let state = fields.get(0).copied().unwrap_or("");
-                        status = match state {
-                            "R" => ProcessStatus::Running,
-                            "S" => ProcessStatus::Sleeping,
-                            "D" => ProcessStatus::Sleeping,
-                            "T" => ProcessStatus::Stopped,
-                            "Z" => ProcessStatus::Zombie,
-                            "I" => ProcessStatus::Idle,
-                            _ => ProcessStatus::Unknown,
-                        };
+                    if stat_parts.len() >= 2 {
+                        let fields: Vec<&str> = stat_parts[0].split_whitespace().collect();
+                        if fields.len() >= 24 {
+                            let rss_pages: u64 = fields.get(21)
+                                .and_then(|v| v.parse().ok())
+                                .unwrap_or(0);
+                            memory_mb = (rss_pages * 4096) / (1024 * 1024);
+
+                            let state = fields.get(0).copied().unwrap_or("");
+                            status = match state {
+                                "R" => ProcessStatus::Running,
+                                "S" => ProcessStatus::Sleeping,
+                                "D" => ProcessStatus::Sleeping,
+                                "T" => ProcessStatus::Stopped,
+                                "Z" => ProcessStatus::Zombie,
+                                "I" => ProcessStatus::Idle,
+                                _ => ProcessStatus::Unknown,
+                            };
+                        }
                     }
-                }
 
-                let ppid = std::fs::read_to_string(format!("/proc/{pid}/status"))
-                    .ok()
-                    .and_then(|s| {
-                        s.lines()
-                            .find(|l| l.starts_with("PPid:"))
-                            .and_then(|l| l.split_whitespace().nth(1))
-                            .and_then(|v| v.parse::<u32>().ok())
+                    let ppid = std::fs::read_to_string(format!("/proc/{pid}/status"))
+                        .ok()
+                        .and_then(|s| {
+                            s.lines()
+                                .find(|l| l.starts_with("PPid:"))
+                                .and_then(|l| l.split_whitespace().nth(1))
+                                .and_then(|v| v.parse::<u32>().ok())
+                        });
+
+                    processes.push(ProcessInfo {
+                        pid,
+                        parent_pid: ppid,
+                        name: comm,
+                        executable_path: exe,
+                        command_line: cmdline,
+                        cpu_percent: 0.0,
+                        memory_mb,
+                        status,
+                        start_time: 0,
+                        user: None,
                     });
-
-                processes.push(ProcessInfo {
-                    pid,
-                    parent_pid: ppid,
-                    name: comm,
-                    executable_path: exe,
-                    command_line: cmdline,
-                    cpu_percent: 0.0,
-                    memory_mb,
-                    status,
-                    start_time: 0,
-                    user: None,
-                });
+                }
             }
-        }
 
-        Ok(processes)
+            Ok(processes)
+        }).await
+          .context("blocking task failed")?
     }
 
     async fn clipboard(&self) -> Result<ClipboardData> {
         let content = match self.session_type {
             SessionType::X11 => {
-                let output = Command::new("xclip")
+                let output = tokio::process::Command::new("xclip")
                     .args(["-selection", "clipboard", "-o"])
-                    .output()?;
+                    .output().await?;
                 String::from_utf8_lossy(&output.stdout).to_string()
             }
             SessionType::Wayland => {
-                let output = Command::new("wl-paste")
-                    .output()?;
+                let output = tokio::process::Command::new("wl-paste")
+                    .output().await?;
                 String::from_utf8_lossy(&output.stdout).to_string()
             }
             _ => String::new(),
         };
 
-        let content_type = if content.starts_with('<') || content.contains("<html") {
+        let content_type = if content.trim().starts_with("<!DOCTYPE html")
+            || content.trim().starts_with("<html")
+            || content.trim().starts_with("<!--")
+        {
             ContentType::Html
         } else {
             ContentType::Text
@@ -565,7 +606,7 @@ impl PlatformBackend for LinuxBackend {
 
     async fn mouse_position(&self) -> Result<MouseInfo> {
         if self.is_hyprland() {
-            if let Ok(pos) = Self::hyprctl_json::<HyprCursorPos>(&["cursorpos", "-j"]) {
+            if let Ok(pos) = Self::hyprctl_json::<HyprCursorPos>(&["cursorpos", "-j"]).await {
                 let semantic = Some(format!("Cursor at ({}, {})", pos.x, pos.y));
                 return Ok(MouseInfo {
                     x: pos.x,
@@ -577,6 +618,7 @@ impl PlatformBackend for LinuxBackend {
         }
 
         let output = Self::xdotool_output(&["getmouselocation"])
+            .await
             .unwrap_or_default();
 
         let mut x = 0i32;
@@ -610,6 +652,7 @@ impl PlatformBackend for LinuxBackend {
     async fn monitors(&self) -> Result<Vec<MonitorInfo>> {
         if self.is_hyprland() {
             let mons: Vec<HyprMonitor> = Self::hyprctl_json(&["monitors", "-j"])
+                .await
                 .unwrap_or_default();
             return Ok(mons
                 .into_iter()
@@ -630,9 +673,9 @@ impl PlatformBackend for LinuxBackend {
         }
 
         if self.session_type == SessionType::X11 {
-            let output = Command::new("xrandr")
+            let output = tokio::process::Command::new("xrandr")
                 .args(["--query"])
-                .output()?;
+                .output().await?;
             let stdout = String::from_utf8_lossy(&output.stdout);
 
             let mut monitors = Vec::new();
@@ -689,7 +732,7 @@ impl PlatformBackend for LinuxBackend {
     }
 
     async fn system_resources(&self) -> Result<SystemResources> {
-        let (total_mb, available_mb) = Self::read_meminfo();
+        let (total_mb, available_mb) = Self::read_meminfo().await;
         let used_mb = total_mb.saturating_sub(available_mb);
         let percent = if total_mb > 0 {
             (used_mb as f64 / total_mb as f64) * 100.0
@@ -697,8 +740,8 @@ impl PlatformBackend for LinuxBackend {
             0.0
         };
 
-        let load = Self::read_load_average();
-        let cpu = Self::read_cpu_usage();
+        let load = Self::read_load_average().await;
+        let cpu = Self::read_cpu_usage().await;
 
         Ok(SystemResources {
             cpu_usage_percent: cpu,
@@ -714,63 +757,65 @@ impl PlatformBackend for LinuxBackend {
     }
 
     async fn network_state(&self) -> Result<NetworkState> {
-        let mut interfaces = Vec::new();
+        task::spawn_blocking(|| -> Result<NetworkState> {
+            let mut interfaces = Vec::new();
 
-        if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name == "lo" {
-                    continue;
+            if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name == "lo" {
+                        continue;
+                    }
+
+                    let is_up = std::fs::read_to_string(format!("/sys/class/net/{name}/operstate"))
+                        .map(|s| s.trim() == "up")
+                        .unwrap_or(false);
+
+                    let mac = std::fs::read_to_string(format!("/sys/class/net/{name}/address"))
+                        .ok()
+                        .map(|s| s.trim().to_string());
+
+                    let stats_rx = std::fs::read_to_string(format!("/sys/class/net/{name}/statistics/rx_bytes"))
+                        .ok()
+                        .and_then(|s| s.trim().parse::<u64>().ok())
+                        .unwrap_or(0);
+
+                    let stats_tx = std::fs::read_to_string(format!("/sys/class/net/{name}/statistics/tx_bytes"))
+                        .ok()
+                        .and_then(|s| s.trim().parse::<u64>().ok())
+                        .unwrap_or(0);
+
+                    interfaces.push(NetworkInterface {
+                        name,
+                        ip_addresses: vec![],
+                        mac_address: mac,
+                        is_up,
+                        bytes_sent: stats_tx,
+                        bytes_received: stats_rx,
+                    });
                 }
-
-                let is_up = std::fs::read_to_string(format!("/sys/class/net/{name}/operstate"))
-                    .map(|s| s.trim() == "up")
-                    .unwrap_or(false);
-
-                let mac = std::fs::read_to_string(format!("/sys/class/net/{name}/address"))
-                    .ok()
-                    .map(|s| s.trim().to_string());
-
-                let stats_rx = std::fs::read_to_string(format!("/sys/class/net/{name}/statistics/rx_bytes"))
-                    .ok()
-                    .and_then(|s| s.trim().parse::<u64>().ok())
-                    .unwrap_or(0);
-
-                let stats_tx = std::fs::read_to_string(format!("/sys/class/net/{name}/statistics/tx_bytes"))
-                    .ok()
-                    .and_then(|s| s.trim().parse::<u64>().ok())
-                    .unwrap_or(0);
-
-                interfaces.push(NetworkInterface {
-                    name,
-                    ip_addresses: vec![],
-                    mac_address: mac,
-                    is_up,
-                    bytes_sent: stats_tx,
-                    bytes_received: stats_rx,
-                });
             }
-        }
 
-        let is_connected = interfaces.iter().any(|i| i.is_up);
-        let connectivity = if is_connected {
-            ConnectivityType::Ethernet
-        } else {
-            ConnectivityType::None
-        };
+            let is_connected = interfaces.iter().any(|i| i.is_up);
+            let connectivity = if is_connected {
+                ConnectivityType::Ethernet
+            } else {
+                ConnectivityType::None
+            };
 
-        Ok(NetworkState {
-            interfaces,
-            is_connected,
-            connectivity_type: connectivity,
-        })
+            Ok(NetworkState {
+                interfaces,
+                is_connected,
+                connectivity_type: connectivity,
+            })
+        }).await
+          .context("blocking task failed")?
     }
 
     async fn audio_devices(&self) -> Result<AudioDevicesInfo> {
-        // Use pactl if available
-        let output = Command::new("pactl")
+        let output = tokio::process::Command::new("pactl")
             .args(["list", "sinks", "short"])
-            .output();
+            .output().await;
 
         let mut outputs = Vec::new();
         if let Ok(output) = output {
@@ -798,50 +843,54 @@ impl PlatformBackend for LinuxBackend {
     }
 
     async fn power_state(&self) -> Result<PowerState> {
-        // Read from /sys/class/power_supply/
-        let mut source = PowerSource::Ac;
-        let mut percent = None;
-        let mut is_charging = false;
+        task::spawn_blocking(|| -> Result<PowerState> {
+            let mut source = PowerSource::Ac;
+            let mut percent = None;
+            let mut is_charging = false;
 
-        if let Ok(entries) = std::fs::read_dir("/sys/class/power_supply") {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                let base = format!("/sys/class/power_supply/{name}");
+            if let Ok(entries) = std::fs::read_dir("/sys/class/power_supply") {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let base = format!("/sys/class/power_supply/{name}");
 
-                let ptype = std::fs::read_to_string(format!("{base}/type"))
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
-
-                if ptype == "Battery" {
-                    let cap = std::fs::read_to_string(format!("{base}/capacity"))
-                        .ok()
-                        .and_then(|s| s.trim().parse::<f64>().ok());
-                    percent = cap;
-
-                    let status = std::fs::read_to_string(format!("{base}/status"))
+                    let ptype = std::fs::read_to_string(format!("{base}/type"))
                         .unwrap_or_default()
                         .trim()
                         .to_string();
-                    is_charging = status == "Charging";
-                    source = PowerSource::Battery;
+
+                    if ptype == "Battery" {
+                        let cap = std::fs::read_to_string(format!("{base}/capacity"))
+                            .ok()
+                            .and_then(|s| s.trim().parse::<f64>().ok());
+                        percent = cap;
+
+                        let status = std::fs::read_to_string(format!("{base}/status"))
+                            .unwrap_or_default()
+                            .trim()
+                            .to_string();
+                        is_charging = status == "Charging";
+                        source = PowerSource::Battery;
+                    }
                 }
             }
-        }
 
-        Ok(PowerState {
-            source,
-            battery_percent: percent,
-            is_charging,
-            time_remaining_seconds: None,
-        })
+            Ok(PowerState {
+                source,
+                battery_percent: percent,
+                is_charging,
+                time_remaining_seconds: None,
+            })
+        }).await
+          .context("blocking task failed")?
     }
 
     async fn workspace(&self) -> Result<WorkspaceInfo> {
         if self.is_hyprland() {
             let workspaces: Vec<HyprWorkspace> = Self::hyprctl_json(&["workspaces", "-j"])
+                .await
                 .unwrap_or_default();
             let active: HyprWorkspace = Self::hyprctl_json(&["activeworkspace", "-j"])
+                .await
                 .unwrap_or(HyprWorkspace {
                     id: 1,
                     name: "1".to_string(),
@@ -865,7 +914,7 @@ impl PlatformBackend for LinuxBackend {
 
         let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
 
-        if desktop.contains("sway") {
+        if desktop.to_lowercase().contains("sway") {
             return Ok(WorkspaceInfo {
                 current: 1,
                 total: 1,
@@ -874,9 +923,9 @@ impl PlatformBackend for LinuxBackend {
         }
 
         if self.session_type == SessionType::X11 {
-            if let Ok(output) = Command::new("xprop")
+            if let Ok(output) = tokio::process::Command::new("xprop")
                 .args(["-root", "_NET_CURRENT_DESKTOP"])
-                .output()
+                .output().await
             {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let current = stdout.split('=')
@@ -884,9 +933,9 @@ impl PlatformBackend for LinuxBackend {
                     .and_then(|s| s.trim().parse::<u32>().ok())
                     .unwrap_or(0);
 
-                if let Ok(output) = Command::new("xprop")
+                if let Ok(output) = tokio::process::Command::new("xprop")
                     .args(["-root", "_NET_NUMBER_OF_DESKTOPS"])
-                    .output()
+                    .output().await
                 {
                     let stdout = String::from_utf8_lossy(&output.stdout);
                     let total = stdout.split('=')
@@ -908,7 +957,6 @@ impl PlatformBackend for LinuxBackend {
     }
 
     async fn notifications(&self) -> Result<Vec<NotificationInfo>> {
-        // Notifications are event-driven via D-Bus; static list is empty
         Ok(vec![])
     }
 }

@@ -5,34 +5,32 @@
 use anyhow::{Result, Context};
 use dcp_types::{CaptureTarget, ImageFormat, VisionCaptureParams, VisionCaptureResult, Rect};
 use base64::Engine;
-use std::process::Command;
 use tracing::warn;
 
 /// Capture a screenshot on Linux.
-pub fn capture_screen(params: &VisionCaptureParams) -> Result<VisionCaptureResult> {
+pub async fn capture_screen(params: &VisionCaptureParams) -> Result<VisionCaptureResult> {
     let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
 
-    let (image_data, width, height, format) = match &params.target {
+    let (image_data, width, height, _format) = match &params.target {
         CaptureTarget::Screen { monitor_id } => {
             if is_wayland {
-                capture_grim(monitor_id.as_ref())?
+                capture_grim(monitor_id.as_ref()).await?
             } else {
-                capture_import_x11(monitor_id.as_ref())?
+                capture_import_x11(monitor_id.as_ref()).await?
             }
         }
         CaptureTarget::Window { window_id } => {
             if is_wayland {
-                // Wayland doesn't support per-window capture easily
-                capture_grim(None)?
+                capture_grim(None).await?
             } else {
-                capture_window_x11(*window_id)?
+                capture_window_x11(*window_id).await?
             }
         }
         CaptureTarget::Region { bounds } => {
             if is_wayland {
-                capture_grim_region(bounds)?
+                capture_grim_region(bounds).await?
             } else {
-                capture_import_x11_region(bounds)?
+                capture_import_x11_region(bounds).await?
             }
         }
     };
@@ -53,11 +51,10 @@ pub fn capture_screen(params: &VisionCaptureParams) -> Result<VisionCaptureResul
     })
 }
 
-fn capture_grim(monitor_id: Option<&u64>) -> Result<(Vec<u8>, u32, u32, ImageFormat)> {
-    // Use grim for Wayland screenshots
-    let output = Command::new("grim")
+async fn capture_grim(_monitor_id: Option<&u64>) -> Result<(Vec<u8>, u32, u32, ImageFormat)> {
+    let output = tokio::process::Command::new("grim")
         .args(["-t", "png", "-"])
-        .output()
+        .output().await
         .context("grim not found — install it for Wayland screenshots")?;
 
     if !output.status.success() {
@@ -65,20 +62,22 @@ fn capture_grim(monitor_id: Option<&u64>) -> Result<(Vec<u8>, u32, u32, ImageFor
         anyhow::bail!("grim failed: {stderr}");
     }
 
-    // Parse PNG dimensions from header
     let (w, h) = parse_png_dimensions(&output.stdout).unwrap_or((0, 0));
+    if w == 0 || h == 0 {
+        warn!("Could not parse PNG dimensions from grim output");
+    }
 
     Ok((output.stdout, w, h, ImageFormat::Png))
 }
 
-fn capture_grim_region(bounds: &Rect) -> Result<(Vec<u8>, u32, u32, ImageFormat)> {
-    let output = Command::new("grim")
+async fn capture_grim_region(bounds: &Rect) -> Result<(Vec<u8>, u32, u32, ImageFormat)> {
+    let output = tokio::process::Command::new("grim")
         .args([
             "-t", "png",
             "-g", &format!("{}x{}+{}+{}", bounds.width, bounds.height, bounds.x, bounds.y),
             "-",
         ])
-        .output()
+        .output().await
         .context("grim not found")?;
 
     if !output.status.success() {
@@ -87,21 +86,24 @@ fn capture_grim_region(bounds: &Rect) -> Result<(Vec<u8>, u32, u32, ImageFormat)
     }
 
     let (w, h) = parse_png_dimensions(&output.stdout).unwrap_or((0, 0));
+    if w == 0 || h == 0 {
+        warn!("Could not parse PNG dimensions from grim region capture output");
+    }
+
     Ok((output.stdout, w, h, ImageFormat::Png))
 }
 
-fn capture_import_x11(monitor_id: Option<&u64>) -> Result<(Vec<u8>, u32, u32, ImageFormat)> {
-    // Use import (ImageMagick) for X11 screenshots
-    let root = if monitor_id.is_some() { "root" } else { "-window" };
-    let args: Vec<&str> = if monitor_id.is_some() {
-        vec!["-window", root, "png:-"]
-    } else {
-        vec!["png:-"]
-    };
+async fn capture_import_x11(monitor_id: Option<&u64>) -> Result<(Vec<u8>, u32, u32, ImageFormat)> {
+    let mut args = vec!["-window", "root"];
+    if let Some(_id) = monitor_id {
+        // Note: xrandr-based monitor selection is complex
+        // For now, just capture full screen
+    }
+    args.push("PNG:-");
 
-    let output = Command::new("import")
+    let output = tokio::process::Command::new("import")
         .args(&args)
-        .output()
+        .output().await
         .context("import not found — install ImageMagick for X11 screenshots")?;
 
     if !output.status.success() {
@@ -110,17 +112,21 @@ fn capture_import_x11(monitor_id: Option<&u64>) -> Result<(Vec<u8>, u32, u32, Im
     }
 
     let (w, h) = parse_png_dimensions(&output.stdout).unwrap_or((0, 0));
+    if w == 0 || h == 0 {
+        warn!("Could not parse PNG dimensions from import output");
+    }
+
     Ok((output.stdout, w, h, ImageFormat::Png))
 }
 
-fn capture_import_x11_region(bounds: &Rect) -> Result<(Vec<u8>, u32, u32, ImageFormat)> {
-    let output = Command::new("import")
+async fn capture_import_x11_region(bounds: &Rect) -> Result<(Vec<u8>, u32, u32, ImageFormat)> {
+    let output = tokio::process::Command::new("import")
         .args([
             "-window", "root",
             "-crop", &format!("{}x{}+{}+{}", bounds.width, bounds.height, bounds.x, bounds.y),
-            "png:-",
+            "PNG:-",
         ])
-        .output()
+        .output().await
         .context("import not found")?;
 
     if !output.status.success() {
@@ -129,13 +135,17 @@ fn capture_import_x11_region(bounds: &Rect) -> Result<(Vec<u8>, u32, u32, ImageF
     }
 
     let (w, h) = parse_png_dimensions(&output.stdout).unwrap_or((0, 0));
+    if w == 0 || h == 0 {
+        warn!("Could not parse PNG dimensions from import region capture output");
+    }
+
     Ok((output.stdout, w, h, ImageFormat::Png))
 }
 
-fn capture_window_x11(window_id: u64) -> Result<(Vec<u8>, u32, u32, ImageFormat)> {
-    let output = Command::new("import")
-        .args(["-window", &window_id.to_string(), "png:-"])
-        .output()
+async fn capture_window_x11(window_id: u64) -> Result<(Vec<u8>, u32, u32, ImageFormat)> {
+    let output = tokio::process::Command::new("import")
+        .args(["-window", &window_id.to_string(), "PNG:-"])
+        .output().await
         .context("import not found")?;
 
     if !output.status.success() {
@@ -144,6 +154,10 @@ fn capture_window_x11(window_id: u64) -> Result<(Vec<u8>, u32, u32, ImageFormat)
     }
 
     let (w, h) = parse_png_dimensions(&output.stdout).unwrap_or((0, 0));
+    if w == 0 || h == 0 {
+        warn!("Could not parse PNG dimensions from import window capture output");
+    }
+
     Ok((output.stdout, w, h, ImageFormat::Png))
 }
 
@@ -152,6 +166,7 @@ fn parse_png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
     // PNG header: 8 bytes signature + IHDR chunk
     // IHDR chunk: 4 bytes length + 4 bytes "IHDR" + 4 bytes width + 4 bytes height
     if data.len() < 24 || &data[0..8] != b"\x89PNG\r\n\x1a\n" {
+        warn!("Data too short or invalid PNG signature for dimension parsing");
         return None;
     }
     let width = u32::from_be_bytes([data[16], data[17], data[18], data[19]]);

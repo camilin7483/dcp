@@ -1,7 +1,8 @@
-//! RPC server: session management, method dispatch, transport.
-
 use anyhow::Result;
-use dcp_types::{RequestId, Request, Response, ErrorCode};
+use dcp_types::{
+    AutomationCommand, AutomationExecuteParams, Capability, ContextSelector, EventType,
+    EventsSubscribeParams, RequestId, Request, Response, ErrorCode,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::UnixListener;
@@ -94,24 +95,37 @@ impl SessionManager {
     }
 }
 
+#[derive(Debug, Clone)]
+struct PermissionError {
+    code: ErrorCode,
+    message: String,
+}
+
+impl std::fmt::Display for PermissionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for PermissionError {}
+
 /// Dispatches JSON-RPC requests to handlers.
 pub struct Dispatcher<B: PlatformBackend + ?Sized> {
     backend: Arc<B>,
     automation: Option<Arc<dyn AutomationBackend>>,
     event_bus: EventBus,
     cache: ContextCache,
-    #[allow(dead_code)]
     perm_manager: PermissionManager,
-    #[allow(dead_code)]
     audit_logger: AuditLogger,
-    session_manager: SessionManager,
+    pub session_manager: SessionManager,
 }
 
 impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
     pub fn new(
         backend: Arc<B>,
         event_bus: EventBus,
-        cache: ContextCache,
+    #[allow(dead_code)]
+    cache: ContextCache,
         perm_manager: PermissionManager,
         audit_logger: AuditLogger,
         session_manager: SessionManager,
@@ -128,41 +142,98 @@ impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
         })
     }
 
+    fn require_cap(
+        &self,
+        session: Option<&Session>,
+        required: &Capability,
+    ) -> std::result::Result<(), PermissionError> {
+        let session = session.ok_or_else(|| PermissionError {
+            code: ErrorCode::SessionExpired,
+            message: "No active session".into(),
+        })?;
+        self.perm_manager
+            .verify_session_capability(session, required)
+            .map_err(|code| PermissionError {
+                code,
+                message: format!("Missing capability: {}", required.as_str()),
+            })
+    }
+
+    #[allow(dead_code)]
+    fn require_caps(
+        &self,
+        session: Option<&Session>,
+        required: &[Capability],
+    ) -> std::result::Result<(), PermissionError> {
+        let session = session.ok_or_else(|| PermissionError {
+            code: ErrorCode::SessionExpired,
+            message: "No active session".into(),
+        })?;
+        self.perm_manager
+            .verify_session_capabilities(session, required)
+            .map_err(|code| PermissionError {
+                code,
+                message: "Missing required capabilities".into(),
+            })
+    }
+
     pub async fn dispatch(
         &self,
         request: &Request,
-        session_id: Option<&str>,
-    ) -> Option<Response> {
-        if request.is_notification() {
-            self.handle_notification(request, session_id).await;
-            return None;
+        session: Option<&Session>,
+    ) -> (Option<Response>, Option<Session>) {
+        let id = request.id.clone().unwrap_or(RequestId::Integer(0));
+
+        if request.method == "session.create" {
+            return self.handle_session_create(request).await;
         }
 
-        let id = request.id.clone().unwrap_or(RequestId::Integer(0));
+        if request.is_notification() {
+            self.handle_notification(request, session).await;
+            return (None, None);
+        }
+
         let result = match request.method.as_str() {
-            "session.create" => self.handle_session_create(request).await,
-            "session.close" => self.handle_session_close(session_id).await,
-            "context.get" => self.handle_context_get(request).await,
-            "events.subscribe" => self.handle_events_subscribe(request).await,
-            "automation.execute" => self.handle_automation(request).await,
-            "vision.capture" => self.handle_vision_capture(request).await,
-            "vision.ocr" => self.handle_vision_ocr(request).await,
+            "session.close" => self.handle_session_close(session).await,
+            "context.get" => self.handle_context_get(request, session).await,
+            "events.subscribe" => self.handle_events_subscribe(request, session).await,
+            "automation.execute" => self.handle_automation(request, session).await,
+            "vision.capture" => self.handle_vision_capture(request, session).await,
+            "vision.ocr" => self.handle_vision_ocr(request, session).await,
             "daemon.status" => self.handle_daemon_status().await,
             _ => {
+                let session_id = session.map(|s| s.id.as_str()).unwrap_or("unknown");
                 self.audit_logger.log_denied(
-                    session_id.unwrap_or("unknown"),
+                    session_id,
                     Some(&request.method),
                     "method not found",
                 );
-                return Some(Response::error(id, ErrorCode::MethodNotFound, format!("Unknown method: {}", request.method)));
+                return (
+                    Some(Response::error(
+                        id,
+                        ErrorCode::MethodNotFound,
+                        format!("Unknown method: {}", request.method),
+                    )),
+                    None,
+                );
             }
         };
 
         match result {
-            Ok(value) => Some(Response::success(id, value)),
+            Ok(value) => (Some(Response::success(id, value)), None),
             Err(e) => {
-                error!("RPC error: {e}");
-                Some(Response::error(id, ErrorCode::InternalError, e.to_string()))
+                let session_id = session.map(|s| s.id.as_str()).unwrap_or("unknown");
+                if let Some(pe) = e.downcast_ref::<PermissionError>() {
+                    self.audit_logger
+                        .log_denied(session_id, Some(&request.method), &pe.message);
+                    (Some(Response::error(id, pe.code, &pe.message)), None)
+                } else {
+                    error!("RPC error: {e}");
+                    (
+                        Some(Response::error(id, ErrorCode::InternalError, e.to_string())),
+                        None,
+                    )
+                }
             }
         }
     }
@@ -170,8 +241,30 @@ impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
     async fn handle_session_create(
         &self,
         request: &Request,
-    ) -> Result<serde_json::Value> {
-        let params: dcp_types::SessionCreateParams = request.params
+    ) -> (Option<Response>, Option<Session>) {
+        let id = request.id.clone().unwrap_or(RequestId::Integer(0));
+        match self.handle_session_create_inner(request).await {
+            Ok((new_session, value)) => (Some(Response::success(id, value)), Some(new_session)),
+            Err(e) => {
+                if let Some(pe) = e.downcast_ref::<PermissionError>() {
+                    (Some(Response::error(id, pe.code, &pe.message)), None)
+                } else {
+                    error!("RPC error: {e}");
+                    (
+                        Some(Response::error(id, ErrorCode::InternalError, e.to_string())),
+                        None,
+                    )
+                }
+            }
+        }
+    }
+
+    async fn handle_session_create_inner(
+        &self,
+        request: &Request,
+    ) -> Result<(Session, serde_json::Value)> {
+        let params: dcp_types::SessionCreateParams = request
+            .params
             .as_ref()
             .map(|p| serde_json::from_value(p.clone()))
             .transpose()?
@@ -182,20 +275,26 @@ impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
             });
 
         let result = self.session_manager.create_session(params, None).await?;
+        let session = self
+            .session_manager
+            .get_session(&result.session_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("session created but not found"))?;
+
         self.audit_logger.log_allowed(
             &result.session_id,
             Some("session.create"),
             "session created",
         );
-        Ok(serde_json::to_value(result)?)
+        Ok((session, serde_json::to_value(result)?))
     }
 
     async fn handle_session_close(
         &self,
-        session_id: Option<&str>,
+        session: Option<&Session>,
     ) -> Result<serde_json::Value> {
-        if let Some(sid) = session_id {
-            self.session_manager.close_session(sid).await;
+        if let Some(s) = session {
+            self.session_manager.close_session(&s.id).await;
         }
         Ok(serde_json::json!({"closed": true}))
     }
@@ -203,14 +302,22 @@ impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
     async fn handle_context_get(
         &self,
         request: &Request,
+        session: Option<&Session>,
     ) -> Result<serde_json::Value> {
-        let params: dcp_types::ContextGetParams = request.params
+        let params: dcp_types::ContextGetParams = request
+            .params
             .as_ref()
             .map(|p| serde_json::from_value(p.clone()))
             .transpose()?
             .unwrap_or(dcp_types::ContextGetParams {
                 selectors: vec![dcp_types::ContextSelector::ActiveWindow],
             });
+
+        for selector in &params.selectors {
+            if let Some(cap) = selector_to_capability(selector) {
+                self.require_cap(session, &cap)?;
+            }
+        }
 
         let mut snapshot = dcp_types::ContextSnapshot::default();
         let backend = &*self.backend;
@@ -287,28 +394,36 @@ impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
     async fn handle_events_subscribe(
         &self,
         request: &Request,
+        session: Option<&Session>,
     ) -> Result<serde_json::Value> {
-        let params: dcp_types::EventsSubscribeParams = request.params
+        let params: EventsSubscribeParams = request
+            .params
             .as_ref()
             .map(|p| serde_json::from_value(p.clone()))
             .transpose()?
-            .unwrap_or(dcp_types::EventsSubscribeParams {
+            .unwrap_or(EventsSubscribeParams {
                 events: vec![],
                 batch: false,
                 batch_interval_ms: None,
             });
 
-        let (sub_id, _rx) = self.event_bus.subscribe(
-            params.events,
-            params.batch,
-            params.batch_interval_ms,
-        ).await;
+        for ev in &params.events {
+            if let Some(cap) = event_type_to_capability(ev) {
+                self.require_cap(session, &cap)?;
+            }
+        }
+
+        let (sub_id, _rx) = self
+            .event_bus
+            .subscribe(params.events, params.batch, params.batch_interval_ms)
+            .await;
         Ok(serde_json::json!({"subscriptionId": sub_id}))
     }
 
     async fn handle_automation(
         &self,
         request: &Request,
+        session: Option<&Session>,
     ) -> Result<serde_json::Value> {
         let Some(automation) = &self.automation else {
             return Ok(serde_json::json!({
@@ -317,11 +432,15 @@ impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
             }));
         };
 
-        let params: dcp_types::AutomationExecuteParams = request.params
+        let params: AutomationExecuteParams = request
+            .params
             .as_ref()
             .map(|p| serde_json::from_value(p.clone()))
             .transpose()?
             .ok_or_else(|| anyhow::anyhow!("missing automation params"))?;
+
+        let cap = automation_command_to_capability(&params.command);
+        self.require_cap(session, &cap)?;
 
         let result = automation.execute(&params.command, params.dry_run).await?;
         Ok(serde_json::to_value(result)?)
@@ -330,14 +449,18 @@ impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
     async fn handle_vision_capture(
         &self,
         request: &Request,
+        session: Option<&Session>,
     ) -> Result<serde_json::Value> {
-        let params: dcp_types::VisionCaptureParams = request.params
+        self.require_cap(session, &dcp_types::Capability::VisionScreenCapture)?;
+
+        let params: dcp_types::VisionCaptureParams = request
+            .params
             .as_ref()
             .map(|p| serde_json::from_value(p.clone()))
             .transpose()?
             .ok_or_else(|| anyhow::anyhow!("missing vision capture params"))?;
 
-        match crate::vision::capture::capture_screen(&params) {
+        match crate::vision::capture::capture_screen(&params).await {
             Ok(result) => Ok(serde_json::to_value(result)?),
             Err(e) => Ok(serde_json::json!({
                 "error": e.to_string(),
@@ -349,14 +472,18 @@ impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
     async fn handle_vision_ocr(
         &self,
         request: &Request,
+        session: Option<&Session>,
     ) -> Result<serde_json::Value> {
-        let params: dcp_types::VisionOcrParams = request.params
+        self.require_cap(session, &dcp_types::Capability::VisionOcrExecute)?;
+
+        let params: dcp_types::VisionOcrParams = request
+            .params
             .as_ref()
             .map(|p| serde_json::from_value(p.clone()))
             .transpose()?
             .ok_or_else(|| anyhow::anyhow!("missing vision OCR params"))?;
 
-        match crate::vision::ocr::ocr_image(&params) {
+        match crate::vision::ocr::ocr_image(&params).await {
             Ok(result) => Ok(serde_json::to_value(result)?),
             Err(e) => Ok(serde_json::json!({
                 "error": e.to_string(),
@@ -374,7 +501,123 @@ impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
         }))
     }
 
-    async fn handle_notification(&self, _request: &Request, _session_id: Option<&str>) {}
+    async fn handle_notification(&self, _request: &Request, _session: Option<&Session>) {}
+}
+
+fn selector_to_capability(sel: &ContextSelector) -> Option<dcp_types::Capability> {
+    match sel {
+        ContextSelector::ActiveWindow | ContextSelector::WindowTree => {
+            Some(Capability::ContextWindowsRead)
+        }
+        ContextSelector::ActiveApplication => Some(Capability::ContextWindowsRead),
+        ContextSelector::Clipboard => Some(Capability::ContextClipboardRead),
+        ContextSelector::RunningProcesses => Some(Capability::ContextProcessesRead),
+        ContextSelector::Mouse => Some(Capability::ContextMouseRead),
+        ContextSelector::KeyboardFocus => Some(Capability::ContextKeyboardFocusRead),
+        ContextSelector::Monitors => Some(Capability::ContextMonitorsRead),
+        ContextSelector::SystemResources => Some(Capability::ContextSystemResourcesRead),
+        ContextSelector::Network => Some(Capability::ContextNetworkRead),
+        ContextSelector::AudioDevices => Some(Capability::ContextAudioRead),
+        ContextSelector::Power => Some(Capability::ContextPowerRead),
+        ContextSelector::Workspace => Some(Capability::ContextWorkspaceRead),
+        ContextSelector::Notifications => Some(Capability::ContextNotificationsRead),
+        ContextSelector::InstalledApps => Some(Capability::ContextInstalledAppsRead),
+        ContextSelector::Terminals => Some(Capability::ContextTerminalsRead),
+        ContextSelector::Browser => Some(Capability::ContextBrowserRead),
+        ContextSelector::OpenFiles => Some(Capability::ContextOpenFilesRead),
+        ContextSelector::SelectedText => Some(Capability::ContextSelectedTextRead),
+        ContextSelector::Extension(_) => None,
+    }
+}
+
+fn event_type_to_capability(ev: &EventType) -> Option<dcp_types::Capability> {
+    match ev {
+        EventType::WindowFocusChanged
+        | EventType::WindowOpened
+        | EventType::WindowClosed
+        | EventType::WindowMoved
+        | EventType::WindowResized
+        | EventType::WindowTitleChanged
+        | EventType::WindowMinimized
+        | EventType::WindowRestored => Some(Capability::EventsWindowSubscribe),
+
+        EventType::ClipboardChanged | EventType::SelectionChanged => {
+            Some(Capability::EventsClipboardSubscribe)
+        }
+
+        EventType::FileChanged
+        | EventType::FileCreated
+        | EventType::FileDeleted
+        | EventType::FileRenamed => Some(Capability::EventsFileSubscribe),
+
+        EventType::TerminalCommandExecuted
+        | EventType::TerminalOutputReceived
+        | EventType::TerminalCwdChanged => Some(Capability::EventsTerminalSubscribe),
+
+        EventType::BrowserTabActivated
+        | EventType::BrowserUrlChanged
+        | EventType::BrowserTabCreated
+        | EventType::BrowserTabClosed => Some(Capability::EventsBrowserSubscribe),
+
+        EventType::NotificationReceived | EventType::NotificationActionTriggered => {
+            Some(Capability::EventsNotificationSubscribe)
+        }
+
+        EventType::MonitorConnected
+        | EventType::MonitorDisconnected
+        | EventType::WorkspaceSwitched => Some(Capability::EventsMonitorSubscribe),
+
+        EventType::AudioDeviceAdded
+        | EventType::AudioDeviceRemoved
+        | EventType::AudioDefaultChanged => Some(Capability::EventsAudioSubscribe),
+
+        EventType::NetworkConnectivityChanged | EventType::NetworkInterfaceChanged => {
+            Some(Capability::EventsNetworkSubscribe)
+        }
+
+        EventType::PowerStateChanged
+        | EventType::SystemSleep
+        | EventType::SystemWake
+        | EventType::ScreenLocked
+        | EventType::ScreenUnlocked
+        | EventType::ApplicationLaunched
+        | EventType::ApplicationTerminated
+        | EventType::ApplicationActivated => Some(Capability::EventsSystemSubscribe),
+
+        EventType::PluginRegistered | EventType::PluginUnregistered => {
+            Some(Capability::EventsPluginSubscribe)
+        }
+
+        EventType::Extension(_) => None,
+    }
+}
+
+fn automation_command_to_capability(cmd: &AutomationCommand) -> Capability {
+    match cmd {
+        AutomationCommand::MouseMove { .. }
+        | AutomationCommand::MouseClick { .. }
+        | AutomationCommand::MouseDoubleClick { .. }
+        | AutomationCommand::MouseDrag { .. }
+        | AutomationCommand::MouseScroll { .. } => Capability::AutomationMouseWrite,
+
+        AutomationCommand::KeyboardType { .. }
+        | AutomationCommand::KeyboardKey { .. }
+        | AutomationCommand::KeyboardHotkey { .. } => Capability::AutomationKeyboardWrite,
+
+        AutomationCommand::ClipboardSet { .. } => Capability::AutomationClipboardWrite,
+
+        AutomationCommand::AppLaunch { .. } => Capability::AutomationAppLaunchWrite,
+
+        AutomationCommand::WindowFocus { .. }
+        | AutomationCommand::WindowMove { .. }
+        | AutomationCommand::WindowResize { .. }
+        | AutomationCommand::WindowMinimize { .. }
+        | AutomationCommand::WindowMaximize { .. }
+        | AutomationCommand::WindowRestore { .. }
+        | AutomationCommand::WindowClose { .. } => Capability::AutomationWindowManagementWrite,
+
+        AutomationCommand::FileOpen { .. } => Capability::AutomationFilesystemWrite,
+    }
 }
 
 /// Unix domain socket server.
@@ -426,11 +669,37 @@ impl<B: PlatformBackend + ?Sized + 'static> UnixSocketServer<B> {
             .new_codec();
 
         let mut framed = Framed::new(stream, codec);
+        let mut session: Option<Session> = None;
 
         while let Some(frame) = framed.next().await {
             let frame = frame?;
             let request: Request = serde_json::from_slice(&frame)?;
-            if let Some(response) = dispatcher.dispatch(&request, None).await {
+            let is_close = request.method == "session.close";
+            let is_create = request.method == "session.create";
+
+            let (response, created_session) =
+                dispatcher.dispatch(&request, session.as_ref()).await;
+
+            if let Some(s) = created_session {
+                session = Some(s);
+            } else if is_create {
+                let session_id = response
+                    .as_ref()
+                    .and_then(|r| r.result.as_ref())
+                    .and_then(|v| v.get("sessionId"))
+                    .and_then(|v| v.as_str());
+                if let Some(sid) = session_id {
+                    if let Some(s) = dispatcher.session_manager.get_session(sid).await {
+                        session = Some(s);
+                    }
+                }
+            }
+
+            if is_close {
+                session = None;
+            }
+
+            if let Some(response) = response {
                 let response_bytes = serde_json::to_vec(&response)?;
                 framed.send(response_bytes.into()).await?;
             }

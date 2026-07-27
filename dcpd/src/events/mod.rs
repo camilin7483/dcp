@@ -8,7 +8,7 @@ use dcp_types::{EventType, SystemEvent};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, watch, RwLock};
 use tokio::time;
 use tracing::warn;
 
@@ -58,11 +58,14 @@ impl EventBus {
         let (tx, rx) = mpsc::channel(256);
         let type_set: HashSet<EventType> = event_types.into_iter().collect();
 
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+
         let state = SubscriptionState {
             id: sub_id.clone(),
             event_types: type_set,
             batch: interval > Duration::ZERO,
             batch_interval: interval,
+            cancel_tx: Some(cancel_tx),
         };
 
         self.subscriptions.write().await.insert(sub_id.clone(), state);
@@ -71,7 +74,7 @@ impl EventBus {
         let subs = self.subscriptions.clone();
         let delivery_id = sub_id.clone();
         tokio::spawn(async move {
-            Self::run_delivery(delivery_id, receiver, tx, subs).await;
+            Self::run_delivery(delivery_id, receiver, tx, subs, cancel_rx).await;
         });
 
         (sub_id, rx)
@@ -79,6 +82,17 @@ impl EventBus {
 
     pub async fn unsubscribe(&self, sub_id: &str) -> bool {
         self.subscriptions.write().await.remove(sub_id).is_some()
+    }
+
+    pub async fn cancel_subscription(&self, sub_id: &str) -> bool {
+        let subs = self.subscriptions.read().await;
+        if let Some(state) = subs.get(sub_id) {
+            if let Some(cancel_tx) = &state.cancel_tx {
+                let _ = cancel_tx.send(true);
+                return true;
+            }
+        }
+        false
     }
 
     pub async fn active_subscriptions(&self) -> Vec<String> {
@@ -90,6 +104,7 @@ impl EventBus {
         mut receiver: broadcast::Receiver<SystemEvent>,
         tx: mpsc::Sender<Vec<SystemEvent>>,
         subs: Arc<RwLock<HashMap<String, SubscriptionState>>>,
+        mut cancel_rx: watch::Receiver<bool>,
     ) {
         let mut batch_buffer: Vec<SystemEvent> = Vec::new();
         let batch_deadline = time::sleep(Duration::from_secs(3600));
@@ -166,6 +181,10 @@ impl EventBus {
                         }
                     }
                 }
+                _ = cancel_rx.changed() => {
+                    // Cancel signal received, flush and exit
+                    break;
+                }
             }
         }
 
@@ -183,4 +202,5 @@ struct SubscriptionState {
     event_types: HashSet<EventType>,
     batch: bool,
     batch_interval: Duration,
+    cancel_tx: Option<watch::Sender<bool>>,
 }

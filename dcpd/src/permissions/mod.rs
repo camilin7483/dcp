@@ -1,6 +1,6 @@
-//! Permission management: capability tokens, HMAC signing, validation.
-
+use crate::server::session::Session;
 use dcp_types::Capability;
+use dcp_types::ErrorCode;
 use std::sync::Arc;
 use base64::Engine;
 
@@ -30,6 +30,31 @@ impl PermissionManager {
         Self {
             hmac_secret: Arc::new(secret),
         }
+    }
+
+    pub fn verify_session_capability(
+        &self,
+        session: &Session,
+        required: &Capability,
+    ) -> Result<(), ErrorCode> {
+        if session.is_expired() {
+            return Err(ErrorCode::SessionExpired);
+        }
+        if !session.has_capability(required) {
+            return Err(ErrorCode::PermissionDenied);
+        }
+        Ok(())
+    }
+
+    pub fn verify_session_capabilities(
+        &self,
+        session: &Session,
+        required: &[Capability],
+    ) -> Result<(), ErrorCode> {
+        for cap in required {
+            self.verify_session_capability(session, cap)?;
+        }
+        Ok(())
     }
 
     pub fn check_grant(
@@ -91,7 +116,7 @@ impl PermissionManager {
         let capabilities: Vec<Capability> = perm_str
             .split(',')
             .filter(|s| !s.is_empty())
-            .filter_map(Capability::from_str)
+            .filter_map(|s| Capability::from_str(s))
             .collect();
 
         Some((session_id.to_string(), capabilities))

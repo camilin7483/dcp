@@ -215,11 +215,19 @@ pub async fn run(args: DaemonArgs) -> Result<()> {
 
     // Start WebSocket server if configured
     if args.remote {
+        if args.tls_cert.is_none() || args.tls_key.is_none() {
+            tracing::error!("--remote requires both --tls-cert and --tls-key");
+            return Ok(());
+        }
         if let Some(addr_str) = &args.remote_addr {
             if let Ok(addr) = websocket::parse_addr(addr_str) {
+                let tls_config = websocket::load_tls_config(
+                    &args.tls_cert.as_ref().unwrap(),
+                    &args.tls_key.as_ref().unwrap(),
+                )?;
                 let ws_dispatcher = dispatcher.clone();
                 tokio::spawn(async move {
-                    let ws_server = websocket::WebSocketServer::new(addr, ws_dispatcher);
+                    let ws_server = websocket::WebSocketServer::new(addr, ws_dispatcher, Some(tls_config));
                     if let Err(e) = ws_server.run().await {
                         tracing::error!("WebSocket server error: {e}");
                     }

@@ -1,0 +1,13 @@
+target/
+*.swp
+*.swo
+.idea/
+.vscode/
+*.pyc
+__pycache__/
+.direnv/
+.envrc
+dcp_ocr_input.png
+*.log
+dist/
+node_modules/

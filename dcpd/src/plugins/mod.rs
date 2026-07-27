@@ -185,58 +185,63 @@ impl PluginHost {
 
     /// Check health of all plugins and restart crashed ones.
     pub async fn health_check(&self) {
-        let plugins = self.plugins.read().await;
-        let mut crashed: Vec<(String, PluginManifest)> = Vec::new();
+        let mut plugins = self.plugins.write().await;
+        let mut to_restart: Vec<(String, PluginManifest)> = Vec::new();
 
-        for (id, instance) in plugins.iter() {
-            if instance.status == PluginStatus::Running {
-                // Try to check if process is still alive
-                let child_ref = &instance.child;
-                // We can't directly check if a tokio Child is alive without consuming it,
-                // so we track this via the status field instead.
+        for (id, instance) in plugins.iter_mut() {
+            if instance.status != PluginStatus::Running {
+                continue;
+            }
+            match instance.child.try_wait() {
+                Ok(Some(status)) => {
+                    warn!("Plugin {id} exited with status: {status}");
+                    instance.status = PluginStatus::Crashed;
+                    if instance.restart_count < self.max_restarts {
+                        to_restart.push((id.clone(), instance.manifest.clone()));
+                    } else {
+                        instance.status = PluginStatus::Failed;
+                        error!("Plugin {id} exceeded max restarts ({})", self.max_restarts);
+                    }
+                }
+                Ok(None) => {
+                    // still alive, nothing to do
+                }
+                Err(e) => {
+                    error!("Plugin {id} health check error: {e}");
+                }
             }
         }
         drop(plugins);
 
-        // Restart crashed plugins
-        for (id, manifest) in crashed {
+        for (id, manifest) in to_restart {
             let mut plugins = self.plugins.write().await;
             if let Some(instance) = plugins.get_mut(&id) {
-                if instance.restart_count < self.max_restarts {
-                    instance.restart_count += 1;
-                    warn!("Restarting plugin {id} (attempt {}/{})",
-                        instance.restart_count, self.max_restarts);
+                instance.restart_count += 1;
+                warn!("Restarting plugin {id} (attempt {}/{})",
+                    instance.restart_count, self.max_restarts);
 
-                    // Re-spawn
-                    let plugin_dir = self.plugin_dir.join(&id);
-                    let executable = plugin_dir.join(&manifest.executable);
-                    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-                        .unwrap_or_else(|_| "/tmp".to_string());
-                    let socket_path = format!(
-                        "{runtime_dir}/dcpd/plugins/{id}.sock"
-                    );
+                let plugin_dir = self.plugin_dir.join(&id);
+                let executable = plugin_dir.join(&manifest.executable);
+                let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+                    .unwrap_or_else(|_| "/tmp".to_string());
+                let socket_path = format!("{runtime_dir}/dcpd/plugins/{id}.sock");
 
-                    match tokio::process::Command::new(&executable)
-                        .arg("--socket")
-                        .arg(&socket_path)
-                        .current_dir(&plugin_dir)
-                        .spawn()
-                    {
-                        Ok(child) => {
-                            instance.child = child;
-                            instance.pid = instance.child.id();
-                            instance.status = PluginStatus::Running;
-                            instance.started_at = std::time::Instant::now();
-                            info!("Plugin {id} restarted successfully");
-                        }
-                        Err(e) => {
-                            error!("Failed to restart plugin {id}: {e}");
-                            instance.status = PluginStatus::Crashed;
-                        }
+                match tokio::process::Command::new(&executable)
+                    .arg("--socket").arg(&socket_path)
+                    .current_dir(&plugin_dir)
+                    .spawn()
+                {
+                    Ok(child) => {
+                        instance.child = child;
+                        instance.pid = instance.child.id();
+                        instance.status = PluginStatus::Running;
+                        instance.started_at = std::time::Instant::now();
+                        info!("Plugin {id} restarted successfully");
                     }
-                } else {
-                    error!("Plugin {id} exceeded max restarts ({})", self.max_restarts);
-                    instance.status = PluginStatus::Failed;
+                    Err(e) => {
+                        error!("Failed to restart plugin {id}: {e}");
+                        instance.status = PluginStatus::Crashed;
+                    }
                 }
             }
         }
