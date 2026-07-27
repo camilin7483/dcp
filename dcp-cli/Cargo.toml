@@ -1,6 +1,6 @@
 [package]
 name = "dcp-cli"
-description = "Desktop Context Protocol — command-line interface"
+description = "CLI client for the Desktop Context Protocol daemon (dcpd)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

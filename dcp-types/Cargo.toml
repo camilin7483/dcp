@@ -1,11 +1,14 @@
 [package]
 name = "dcp-types"
-description = "Desktop Context Protocol — shared types and protocol definitions"
+description = "Shared protocol types for the Desktop Context Protocol (DCP)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[lib]
+name = "dcp_types"
 
 [dependencies]
 serde = { workspace = true }

@@ -102,6 +102,7 @@ async fn main() -> Result<()> {
 /// Client for communicating with dcpd.
 struct DcpClient {
     framed: Framed<UnixStream, LengthDelimitedCodec>,
+    session_id: Option<String>,
 }
 
 impl DcpClient {
@@ -115,9 +116,45 @@ impl DcpClient {
             .max_frame_length(16 * 1024 * 1024)
             .new_codec();
 
-        Ok(Self {
+        let mut client = Self {
             framed: Framed::new(stream, codec),
-        })
+            session_id: None,
+        };
+
+        // Auto-create session with default capabilities
+        client.create_default_session().await?;
+
+        Ok(client)
+    }
+
+    async fn create_default_session(&mut self) -> Result<()> {
+        let request = Request::new(
+            1,
+            "session.create",
+            SessionCreateParams {
+                client_name: Some("dcp-cli".to_string()),
+                capabilities: Capability::default_local(),
+                encoding: None,
+            },
+        );
+
+        let bytes = serde_json::to_vec(&request)?;
+        self.framed.send(bytes.into()).await?;
+
+        let response_bytes = self.framed.next().await.context("Connection closed")??;
+        let response: Response = serde_json::from_slice(&response_bytes)?;
+
+        if let Some(error) = response.error {
+            anyhow::bail!("Session creation failed: {} (code {})", error.message, error.code);
+        }
+
+        if let Some(result) = response.result {
+            if let Some(sid) = result.get("sessionId").and_then(|v| v.as_str()) {
+                self.session_id = Some(sid.to_string());
+            }
+        }
+
+        Ok(())
     }
 
     async fn send(&mut self, request: &Request) -> Result<Option<Response>> {

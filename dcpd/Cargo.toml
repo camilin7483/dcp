@@ -1,6 +1,6 @@
 [package]
 name = "dcpd"
-description = "Desktop Context Protocol — core daemon"
+description = "Desktop Context Protocol daemon — exposes desktop state via JSON-RPC over Unix sockets and TLS WebSocket"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "dcp-client"
-description = "Rust client for the Desktop Context Protocol (DCP) daemon"
+description = "Rust client library for the Desktop Context Protocol (DCP) daemon"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

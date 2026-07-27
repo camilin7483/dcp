@@ -1,6 +1,6 @@
 [package]
 name = "dcp-plugin-sdk"
-description = "Desktop Context Protocol — plugin development SDK"
+description = "SDK for developing DCP plugins in Rust"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
