@@ -1,0 +1,37 @@
+[Unit]
+Description=DCP — Desktop Context Protocol Daemon
+Documentation=https://github.com/your-org/dcp
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/dcpd --foreground
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=no
+
+# Allow access to display, wayland, dbus, audio
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Allow access to /proc for process info
+ReadOnlyPaths=/proc
+ReadOnlyPaths=/sys
+ReadWritePaths=%t/dcpd
+ReadWritePaths=%h/.local/share/dcpd
+
+# Environment
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,131 @@
+//! Tesseract OCR integration.
+//!
+//! Provides text recognition from captured images using Tesseract.
+//! Requires tesseract and leptonica system libraries.
+
+use anyhow::Result;
+use dcp_types::{VisionOcrParams, VisionOcrResult, TextBox, Rect};
+
+/// Perform OCR on a base64-encoded image.
+pub fn ocr_image(params: &VisionOcrParams) -> Result<VisionOcrResult> {
+    use base64::Engine;
+    use image::GenericImageView;
+
+    let image_data = base64::engine::general_purpose::STANDARD
+        .decode(&params.image_base64)?;
+
+    let img = image::load_from_memory(&image_data)
+        .map_err(|e| anyhow::anyhow!("Failed to load image: {e}"))?;
+
+    let (width, height) = img.dimensions();
+
+    let cropped = if let Some(region) = &params.region {
+        let x = region.x.max(0) as u32;
+        let y = region.y.max(0) as u32;
+        let w = region.width.min(width.saturating_sub(x));
+        let h = region.height.min(height.saturating_sub(y));
+
+        if w == 0 || h == 0 {
+            return Ok(VisionOcrResult {
+                text: String::new(),
+                confidence: 0.0,
+                text_boxes: vec![],
+            });
+        }
+
+        let view = img.view(x, y, w, h).to_image();
+        let rgb: image::ImageBuffer<image::Rgb<u8>, Vec<u8>> = image::ImageBuffer::from_fn(
+            view.width(),
+            view.height(),
+            |px, py| {
+                let pixel = view.get_pixel(px, py);
+                image::Rgb([pixel[0], pixel[1], pixel[2]])
+            },
+        );
+        image::DynamicImage::ImageRgb8(rgb)
+    } else {
+        img.clone()
+    };
+
+    let temp_path = std::env::temp_dir().join("dcp_ocr_input.png");
+    cropped.save(&temp_path)?;
+
+    let lang = params.language.as_deref().unwrap_or("eng");
+
+    let mut tess = tesseract::Tesseract::new(
+        Some(temp_path.to_str().unwrap_or("")),
+        Some(lang),
+    )?;
+
+    let text = tess.get_text()?;
+    let hocr = tess.get_hocr_text(0).unwrap_or_default();
+    let confidence = tess.mean_text_conf() as f64 / 100.0;
+
+    let text_boxes = parse_hocr(&hocr);
+
+    let _ = std::fs::remove_file(&temp_path);
+
+    Ok(VisionOcrResult {
+        text: text.trim().to_string(),
+        confidence,
+        text_boxes,
+    })
+}
+
+fn parse_hocr(hocr: &str) -> Vec<TextBox> {
+    let mut boxes = Vec::new();
+
+    for line in hocr.lines() {
+        if !line.contains("ocrx_word") {
+            continue;
+        }
+
+        if let Some(bbox_start) = line.find("bbox") {
+            let bbox_str = &line[bbox_start..];
+            let numbers: Vec<i32> = bbox_str
+                .split_whitespace()
+                .skip(1)
+                .take(4)
+                .filter_map(|s| s.trim_end_matches(';').parse().ok())
+                .collect();
+
+            if numbers.len() == 4 {
+                let x0 = numbers[0];
+                let y0 = numbers[1];
+                let x1 = numbers[2];
+                let y1 = numbers[3];
+
+                let confidence = if let Some(conf_start) = line.find("x_wconf") {
+                    let conf_str = &line[conf_start..];
+                    conf_str.split_whitespace()
+                        .nth(1)
+                        .and_then(|s| s.trim_end_matches('\'').parse::<f64>().ok())
+                        .unwrap_or(0.0) / 100.0
+                } else {
+                    0.0
+                };
+
+                let text = if let Some(gt_pos) = line.rfind('>') {
+                    let text_part = &line[gt_pos + 1..];
+                    text_part.split('<').next().unwrap_or("").trim().to_string()
+                } else {
+                    String::new()
+                };
+
+                if !text.is_empty() {
+                    boxes.push(TextBox {
+                        bounds: Rect::new(x0, y0, (x1 - x0) as u32, (y1 - y0) as u32),
+                        text,
+                        confidence,
+                    });
+                }
+            }
+        }
+    }
+
+    boxes
+}
+
+pub fn is_available() -> bool {
+    tesseract::Tesseract::new(Some(""), Some("eng")).is_ok()
+}

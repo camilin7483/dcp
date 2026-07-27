@@ -1,0 +1,47 @@
+# DCP Daemon Configuration
+# Location: ~/.config/dcpd/config.toml
+
+# Socket path (default: $XDG_RUNTIME_DIR/dcpd.sock)
+# socket = "/run/user/1000/dcpd.sock"
+
+# Log level: trace, debug, info, warn, error
+log_level = "info"
+
+# Plugin directory (default: $XDG_DATA_HOME/dcpd/plugins)
+# plugin_dir = "~/.local/share/dcpd/plugins"
+
+# Audit log directory (default: $XDG_DATA_HOME/dcpd/audit)
+# audit_dir = "~/.local/share/dcpd/audit"
+
+# Remote access (TLS WebSocket)
+remote = false
+# remote_addr = "127.0.0.1:9527"
+# tls_cert = "/path/to/cert.pem"
+# tls_key = "/path/to/key.pem"
+
+# Enable vision module (requires tesseract for OCR)
+vision = false
+
+# File system watcher paths (default: $HOME)
+watch_paths = [
+    # "/home/user/projects",
+    # "/home/user/documents",
+]
+
+# Default permissions for local sessions
+default_permissions = [
+    "dcp:context:windows:read",
+    "dcp:context:clipboard:read",
+    "dcp:context:processes:read",
+    "dcp:context:mouse:read",
+    "dcp:context:systemResources:read",
+    "dcp:events:window:subscribe",
+    "dcp:events:clipboard:subscribe",
+]
+
+# Plugin-specific configuration
+# [plugins.browser]
+# refresh_interval_ms = 1000
+
+# [plugins.vscode]
+# workspace_dir = "/home/user/projects"

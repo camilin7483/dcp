@@ -1,0 +1,13 @@
+{
+    "plugin_id": "system-info",
+    "version": "0.1.0",
+    "description": "Exposes system hostname, uptime, and load average",
+    "author": "DCP Team",
+    "executable": "example-plugin",
+    "auto_start": true,
+    "capabilities": {
+        "provides_context": ["systemInfo"],
+        "emits_events": [],
+        "handles_automation": []
+    }
+}

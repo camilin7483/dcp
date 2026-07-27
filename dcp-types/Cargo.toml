@@ -1,0 +1,26 @@
+[package]
+name = "dcp-types"
+description = "Desktop Context Protocol — shared types and protocol definitions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+base64 = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+chrono = { workspace = true }
+
+[features]
+default = []
+msgpack = ["dep:rmp-serde"]
+
+[dependencies.rmp-serde]
+version = "1"
+optional = true

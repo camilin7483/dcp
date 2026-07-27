@@ -1,0 +1,23 @@
+[package]
+name = "dcp-plugin-sdk"
+description = "Desktop Context Protocol — plugin development SDK"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dcp-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+bytes = { workspace = true }
+uuid = { workspace = true }
+futures = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+async-trait = "0.1"

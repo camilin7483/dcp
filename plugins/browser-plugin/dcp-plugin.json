@@ -1,0 +1,13 @@
+{
+    "plugin_id": "browser",
+    "version": "0.1.0",
+    "description": "Browser integration — exposes active page title, tabs, and URLs",
+    "author": "DCP Team",
+    "executable": "browser-plugin",
+    "auto_start": true,
+    "capabilities": {
+        "provides_context": ["browser.tabs", "browser.active"],
+        "emits_events": ["browser.tab.changed"],
+        "handles_automation": []
+    }
+}

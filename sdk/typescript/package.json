@@ -1,0 +1,17 @@
+{
+  "name": "dcp-client",
+  "version": "0.1.0",
+  "description": "Desktop Context Protocol — TypeScript client SDK",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "lint": "tsc --noEmit"
+  },
+  "files": ["dist"],
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}
