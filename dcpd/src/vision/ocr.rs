@@ -4,15 +4,14 @@
 //! Requires tesseract and leptonica system libraries.
 
 use anyhow::Result;
-use dcp_types::{VisionOcrParams, VisionOcrResult, TextBox, Rect};
+use dcp_types::{Rect, TextBox, VisionOcrParams, VisionOcrResult};
 
 /// Perform OCR on a base64-encoded image.
 pub async fn ocr_image(params: &VisionOcrParams) -> Result<VisionOcrResult> {
     use base64::Engine;
     use image::GenericImageView;
 
-    let image_data = base64::engine::general_purpose::STANDARD
-        .decode(&params.image_base64)?;
+    let image_data = base64::engine::general_purpose::STANDARD.decode(&params.image_base64)?;
 
     let img = image::load_from_memory(&image_data)
         .map_err(|e| anyhow::anyhow!("Failed to load image: {e}"))?;
@@ -34,14 +33,11 @@ pub async fn ocr_image(params: &VisionOcrParams) -> Result<VisionOcrResult> {
         }
 
         let view = img.view(x, y, w, h).to_image();
-        let rgb: image::ImageBuffer<image::Rgb<u8>, Vec<u8>> = image::ImageBuffer::from_fn(
-            view.width(),
-            view.height(),
-            |px, py| {
+        let rgb: image::ImageBuffer<image::Rgb<u8>, Vec<u8>> =
+            image::ImageBuffer::from_fn(view.width(), view.height(), |px, py| {
                 let pixel = view.get_pixel(px, py);
                 image::Rgb([pixel[0], pixel[1], pixel[2]])
-            },
-        );
+            });
         image::DynamicImage::ImageRgb8(rgb)
     } else {
         img.clone()
@@ -52,10 +48,7 @@ pub async fn ocr_image(params: &VisionOcrParams) -> Result<VisionOcrResult> {
 
     let lang = params.language.as_deref().unwrap_or("eng");
 
-    let mut tess = tesseract::Tesseract::new(
-        Some(temp_path.to_str().unwrap_or("")),
-        Some(lang),
-    )?;
+    let mut tess = tesseract::Tesseract::new(Some(temp_path.to_str().unwrap_or("")), Some(lang))?;
 
     let text = tess.get_text()?;
     let hocr = tess.get_hocr_text(0).unwrap_or_default();
@@ -97,10 +90,12 @@ fn parse_hocr(hocr: &str) -> Vec<TextBox> {
 
                 let confidence = if let Some(conf_start) = line.find("x_wconf") {
                     let conf_str = &line[conf_start..];
-                    conf_str.split_whitespace()
+                    conf_str
+                        .split_whitespace()
                         .nth(1)
                         .and_then(|s| s.trim_end_matches('\'').parse::<f64>().ok())
-                        .unwrap_or(0.0) / 100.0
+                        .unwrap_or(0.0)
+                        / 100.0
                 } else {
                     0.0
                 };

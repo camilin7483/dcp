@@ -157,10 +157,7 @@ impl Client {
         method: &str,
         params: P,
     ) -> Result<T> {
-        let framed = self
-            .framed
-            .as_mut()
-            .ok_or(ClientError::NotConnected)?;
+        let framed = self.framed.as_mut().ok_or(ClientError::NotConnected)?;
 
         self.request_id += 1;
         let request = Request::new(self.request_id as i64, method, params);

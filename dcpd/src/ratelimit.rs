@@ -17,7 +17,7 @@ struct TokenBucket {
 pub struct RateLimiter {
     buckets: Arc<RwLock<HashMap<String, TokenBucket>>>,
     max_tokens: f64,
-    refill_rate: f64,      // tokens per second
+    refill_rate: f64, // tokens per second
     refill_interval: Duration,
 }
 
@@ -70,7 +70,8 @@ impl RateLimiter {
     /// Get remaining tokens for a key (approximate).
     pub async fn remaining(&self, key: &str) -> f64 {
         let buckets = self.buckets.read().await;
-        buckets.get(key)
+        buckets
+            .get(key)
             .map(|b| b.tokens)
             .unwrap_or(self.max_tokens)
     }

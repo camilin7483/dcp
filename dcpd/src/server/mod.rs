@@ -1,20 +1,21 @@
 use anyhow::Result;
 use dcp_types::{
-    AutomationCommand, AutomationExecuteParams, Capability, ContextSelector, EventType,
-    EventsSubscribeParams, RequestId, Request, Response, ErrorCode,
+    AutomationCommand, AutomationExecuteParams, Capability, ContextSelector, ErrorCode, EventType,
+    EventsSubscribeParams, Request, RequestId, Response,
 };
+use futures::SinkExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::UnixListener;
-use tracing::{info, warn, error};
-use futures::SinkExt;
+use tracing::{error, info, warn};
 
-use crate::platform::PlatformBackend;
-use crate::events::EventBus;
-use crate::cache::ContextCache;
-use crate::permissions::PermissionManager;
 use crate::audit::AuditLogger;
 use crate::automation::AutomationBackend;
+use crate::cache::ContextCache;
+use crate::events::EventBus;
+use crate::metrics::MetricsRegistry;
+use crate::permissions::PermissionManager;
+use crate::platform::PlatformBackend;
 use crate::ratelimit;
 
 pub mod session;
@@ -49,17 +50,16 @@ impl SessionManager {
             &params.capabilities,
             client_addr.as_deref(),
         );
-        let denied: Vec<_> = params.capabilities
+        let denied: Vec<_> = params
+            .capabilities
             .iter()
             .filter(|c| !granted.contains(c))
             .cloned()
             .collect();
 
-        let token = self.perm_manager.create_token(
-            &session_id,
-            &granted,
-            expires_at,
-        );
+        let token = self
+            .perm_manager
+            .create_token(&session_id, &granted, expires_at);
 
         let sess = Session {
             id: session_id.clone(),
@@ -131,19 +131,20 @@ pub struct Dispatcher<B: PlatformBackend + ?Sized> {
     audit_logger: AuditLogger,
     pub session_manager: SessionManager,
     rate_limiter: ratelimit::RateLimiter,
+    metrics: MetricsRegistry,
 }
 
 impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
     pub fn new(
         backend: Arc<B>,
         event_bus: EventBus,
-    #[allow(dead_code)]
-    cache: ContextCache,
+        #[allow(dead_code)] cache: ContextCache,
         perm_manager: PermissionManager,
         audit_logger: AuditLogger,
         session_manager: SessionManager,
         automation: Option<Arc<dyn AutomationBackend>>,
         rate_limiter: ratelimit::RateLimiter,
+        metrics: MetricsRegistry,
     ) -> Arc<Self> {
         Arc::new(Self {
             backend,
@@ -154,6 +155,7 @@ impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
             audit_logger,
             session_manager,
             rate_limiter,
+            metrics,
         })
     }
 
@@ -199,11 +201,8 @@ impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
     ) -> (Option<Response>, Option<Session>) {
         let client_key = session.map(|s| s.id.as_str()).unwrap_or("anonymous");
         if !self.rate_limiter.allow(client_key).await {
-            self.audit_logger.log_denied(
-                client_key,
-                Some(&request.method),
-                "rate limited",
-            );
+            self.audit_logger
+                .log_denied(client_key, Some(&request.method), "rate limited");
             return (
                 Some(Response::error(
                     request.id.clone().unwrap_or(RequestId::Integer(0)),
@@ -235,12 +234,11 @@ impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
             "vision.capture" => self.handle_vision_capture(request, session).await,
             "vision.ocr" => self.handle_vision_ocr(request, session).await,
             "daemon.status" => self.handle_daemon_status().await,
+            "daemon.health" => self.handle_daemon_health().await,
+            "daemon.metrics" => self.handle_daemon_metrics().await,
             _ => {
-                self.audit_logger.log_denied(
-                    session_id,
-                    Some(&request.method),
-                    "method not found",
-                );
+                self.audit_logger
+                    .log_denied(session_id, Some(&request.method), "method not found");
                 return (
                     Some(Response::error(
                         id,
@@ -259,6 +257,19 @@ impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
             &result,
             duration,
         );
+
+        // Track metrics
+        let duration_secs = start.elapsed().as_secs_f64();
+        self.metrics.increment_counter("rpc_calls_total", 1).await;
+        self.metrics
+            .observe_histogram("rpc_duration_seconds", duration_secs)
+            .await;
+        self.metrics
+            .set_gauge(
+                "active_sessions",
+                self.session_manager.active_sessions().await.len() as f64,
+            )
+            .await;
 
         match result {
             Ok(value) => (Some(Response::success(id, value)), None),
@@ -329,10 +340,7 @@ impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
         Ok((session, serde_json::to_value(result)?))
     }
 
-    async fn handle_session_close(
-        &self,
-        session: Option<&Session>,
-    ) -> Result<serde_json::Value> {
+    async fn handle_session_close(&self, session: Option<&Session>) -> Result<serde_json::Value> {
         if let Some(s) = session {
             self.session_manager.close_session(&s.id).await;
         }
@@ -565,6 +573,21 @@ impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
         }))
     }
 
+    async fn handle_daemon_health(&self) -> Result<serde_json::Value> {
+        let plugin_list: Vec<String> = vec![]; // Simplified — in real impl, get from plugin_host
+        Ok(serde_json::json!({
+            "status": "ok",
+            "version": dcp_types::PROTOCOL_VERSION,
+            "uptime_seconds": self.metrics.uptime_secs(),
+            "active_sessions": self.session_manager.active_sessions().await.len(),
+            "plugins": plugin_list,
+        }))
+    }
+
+    async fn handle_daemon_metrics(&self) -> Result<serde_json::Value> {
+        Ok(self.metrics.snapshot(self.metrics.uptime_secs()).await)
+    }
+
     async fn handle_notification(&self, _request: &Request, _session: Option<&Session>) {}
 }
 
@@ -724,8 +747,8 @@ impl<B: PlatformBackend + ?Sized + 'static> UnixSocketServer<B> {
         stream: tokio::net::UnixStream,
         dispatcher: Arc<Dispatcher<B>>,
     ) -> Result<()> {
-        use tokio_util::codec::{Framed, LengthDelimitedCodec};
         use futures::StreamExt;
+        use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
         let codec = LengthDelimitedCodec::builder()
             .length_field_length(4)
@@ -741,8 +764,7 @@ impl<B: PlatformBackend + ?Sized + 'static> UnixSocketServer<B> {
             let is_close = request.method == "session.close";
             let is_create = request.method == "session.create";
 
-            let (response, created_session) =
-                dispatcher.dispatch(&request, session.as_ref()).await;
+            let (response, created_session) = dispatcher.dispatch(&request, session.as_ref()).await;
 
             if let Some(s) = created_session {
                 session = Some(s);

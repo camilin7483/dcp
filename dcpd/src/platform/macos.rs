@@ -21,7 +21,8 @@ impl MacOsBackend {
     async fn osascript(script: &str) -> Result<String> {
         let output = Command::new("osascript")
             .args(["-e", script])
-            .output().await?;
+            .output()
+            .await?;
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
@@ -29,7 +30,8 @@ impl MacOsBackend {
     async fn jxa(script: &str) -> Result<String> {
         let output = Command::new("osascript")
             .args(["-l", "JavaScript", "-e", script])
-            .output().await?;
+            .output()
+            .await?;
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 }
@@ -49,8 +51,16 @@ JSON.stringify({app: appName, title: title, pid: app.unixId()});
         let mut app = String::new();
         let mut pid: u32 = 0;
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&result) {
-            title = val.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            app = val.get("app").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            title = val
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            app = val
+                .get("app")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             pid = val.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
         }
         let semantic = if !title.is_empty() {
@@ -76,13 +86,13 @@ JSON.stringify({app: appName, title: title, pid: app.unixId()});
     async fn running_processes(&self) -> Result<Vec<ProcessInfo>> {
         // ps aux on macOS: USER PID %CPU %MEM VSZ RSS TT STAT STARTED TIME COMMAND
         // RSS is column 5 (0-indexed), in KB. Skip header line.
-        let output = Command::new("ps")
-            .args(["aux"])
-            .output().await?;
+        let output = Command::new("ps").args(["aux"]).output().await?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut processes = Vec::new();
         for (i, line) in stdout.lines().enumerate() {
-            if i == 0 { continue; }
+            if i == 0 {
+                continue;
+            }
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 11 {
                 let pid: u32 = parts.get(1).and_then(|v| v.parse().ok()).unwrap_or(0);
@@ -108,8 +118,7 @@ JSON.stringify({app: appName, title: title, pid: app.unixId()});
     }
 
     async fn clipboard(&self) -> Result<ClipboardData> {
-        let output = Command::new("pbpaste")
-            .output().await?;
+        let output = Command::new("pbpaste").output().await?;
         let content = String::from_utf8_lossy(&output.stdout).to_string();
         Ok(ClipboardData {
             content_type: ContentType::Text,
@@ -124,25 +133,39 @@ set pt to current location of mouse
 return (item 1 of pt) & "|" & (item 2 of pt)"#;
         let result = Self::osascript(script).await.unwrap_or_default();
         let parts: Vec<&str> = result.splitn(2, '|').collect();
-        let x = parts.get(0).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
-        let y = parts.get(1).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
-        Ok(MouseInfo { x, y, display_id: None, semantic_context: None })
+        let x = parts
+            .get(0)
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0);
+        let y = parts
+            .get(1)
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0);
+        Ok(MouseInfo {
+            x,
+            y,
+            display_id: None,
+            semantic_context: None,
+        })
     }
 
     async fn monitors(&self) -> Result<Vec<MonitorInfo>> {
         let output = Command::new("system_profiler")
             .args(["SPDisplaysDataType", "-json"])
-            .output().await?;
+            .output()
+            .await?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut monitors = Vec::new();
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&stdout) {
             if let Some(displays) = val.get("SPDisplaysDataType").and_then(|v| v.as_array()) {
                 for (i, display) in displays.iter().enumerate() {
-                    let name = display.get("sppci_model")
+                    let name = display
+                        .get("sppci_model")
                         .and_then(|v| v.as_str())
                         .unwrap_or("Display")
                         .to_string();
-                    let res = display.get("spdisplays_resolution")
+                    let res = display
+                        .get("spdisplays_resolution")
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
@@ -166,14 +189,15 @@ return (item 1 of pt) & "|" & (item 2 of pt)"#;
     async fn system_resources(&self) -> Result<SystemResources> {
         let cpu = Command::new("ps")
             .args(["-A", "-o", "%cpu="])
-            .output().await?;
+            .output()
+            .await?;
         let cpu_out = String::from_utf8_lossy(&cpu.stdout);
-        let cpu_avg: f64 = cpu_out.lines()
+        let cpu_avg: f64 = cpu_out
+            .lines()
             .filter_map(|l| l.trim().parse::<f64>().ok())
             .sum::<f64>();
 
-        let mem = Command::new("vm_stat")
-            .output().await?;
+        let mem = Command::new("vm_stat").output().await?;
         let mem_out = String::from_utf8_lossy(&mem.stdout);
         let page_size: u64 = 16384;
         let mut active_pages: u64 = 0;
@@ -181,17 +205,33 @@ return (item 1 of pt) & "|" & (item 2 of pt)"#;
         let mut free_pages: u64 = 0;
         for line in mem_out.lines() {
             if line.starts_with("Pages active:") {
-                active_pages = line.split(':').nth(1).and_then(|v| v.trim().trim_end_matches('.').parse().ok()).unwrap_or(0);
+                active_pages = line
+                    .split(':')
+                    .nth(1)
+                    .and_then(|v| v.trim().trim_end_matches('.').parse().ok())
+                    .unwrap_or(0);
             } else if line.starts_with("Pages wired down:") {
-                wired_pages = line.split(':').nth(1).and_then(|v| v.trim().trim_end_matches('.').parse().ok()).unwrap_or(0);
+                wired_pages = line
+                    .split(':')
+                    .nth(1)
+                    .and_then(|v| v.trim().trim_end_matches('.').parse().ok())
+                    .unwrap_or(0);
             } else if line.starts_with("Pages free:") {
-                free_pages = line.split(':').nth(1).and_then(|v| v.trim().trim_end_matches('.').parse().ok()).unwrap_or(0);
+                free_pages = line
+                    .split(':')
+                    .nth(1)
+                    .and_then(|v| v.trim().trim_end_matches('.').parse().ok())
+                    .unwrap_or(0);
             }
         }
         let used_mb = ((active_pages + wired_pages) * page_size) / (1024 * 1024);
         let free_mb = (free_pages * page_size) / (1024 * 1024);
         let total_mb = used_mb + free_mb;
-        let pct = if total_mb > 0 { (used_mb as f64 / total_mb as f64) * 100.0 } else { 0.0 };
+        let pct = if total_mb > 0 {
+            (used_mb as f64 / total_mb as f64) * 100.0
+        } else {
+            0.0
+        };
 
         Ok(SystemResources {
             cpu_usage_percent: cpu_avg,
@@ -207,11 +247,10 @@ return (item 1 of pt) & "|" & (item 2 of pt)"#;
     }
 
     async fn network_state(&self) -> Result<NetworkState> {
-        let output = Command::new("ifconfig")
-            .args(["-l"])
-            .output().await?;
+        let output = Command::new("ifconfig").args(["-l"]).output().await?;
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let interfaces: Vec<NetworkInterface> = stdout.split_whitespace()
+        let interfaces: Vec<NetworkInterface> = stdout
+            .split_whitespace()
             .filter(|name| *name != "lo0")
             .map(|name| NetworkInterface {
                 name: name.to_string(),
@@ -239,9 +278,7 @@ return (item 1 of pt) & "|" & (item 2 of pt)"#;
     }
 
     async fn power_state(&self) -> Result<PowerState> {
-        let output = Command::new("pmset")
-            .args(["-g", "batt"])
-            .output().await?;
+        let output = Command::new("pmset").args(["-g", "batt"]).output().await?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut percent = None;
         let mut is_charging = false;
@@ -253,12 +290,25 @@ return (item 1 of pt) & "|" & (item 2 of pt)"#;
                 }
             }
         }
-        let source = if is_charging { PowerSource::Ac } else { PowerSource::Battery };
-        Ok(PowerState { source, battery_percent: percent, is_charging, time_remaining_seconds: None })
+        let source = if is_charging {
+            PowerSource::Ac
+        } else {
+            PowerSource::Battery
+        };
+        Ok(PowerState {
+            source,
+            battery_percent: percent,
+            is_charging,
+            time_remaining_seconds: None,
+        })
     }
 
     async fn workspace(&self) -> Result<WorkspaceInfo> {
-        Ok(WorkspaceInfo { current: 1, total: 1, names: vec!["Desktop".to_string()] })
+        Ok(WorkspaceInfo {
+            current: 1,
+            total: 1,
+            names: vec!["Desktop".to_string()],
+        })
     }
 
     async fn notifications(&self) -> Result<Vec<NotificationInfo>> {
@@ -275,11 +325,10 @@ return (item 1 of pt) & "|" & (item 2 of pt)"#;
     }
 
     async fn installed_apps(&self) -> Result<Vec<InstalledApp>> {
-        let output = Command::new("ls")
-            .args(["/Applications"])
-            .output().await?;
+        let output = Command::new("ls").args(["/Applications"]).output().await?;
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let apps: Vec<InstalledApp> = stdout.lines()
+        let apps: Vec<InstalledApp> = stdout
+            .lines()
             .filter(|line| line.ends_with(".app"))
             .map(|line| InstalledApp {
                 name: line.trim_end_matches(".app").to_string(),
@@ -300,7 +349,13 @@ return (item 1 of pt) & "|" & (item 2 of pt)"#;
 /// Parse a resolution string like "1920x1080" into (width, height)
 fn parse_resolution(res: &str) -> (u32, u32) {
     let parts: Vec<&str> = res.split('x').collect();
-    let w = parts.get(0).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
-    let h = parts.get(1).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+    let w = parts
+        .get(0)
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0);
+    let h = parts
+        .get(1)
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0);
     (w, h)
 }

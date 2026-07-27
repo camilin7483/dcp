@@ -20,8 +20,14 @@ mod tests {
 
     #[test]
     fn test_capability_as_str() {
-        assert_eq!(Capability::ContextWindowsRead.as_str(), "dcp:context:windows:read");
-        assert_eq!(Capability::AutomationMouseWrite.as_str(), "dcp:automation:mouse:write");
+        assert_eq!(
+            Capability::ContextWindowsRead.as_str(),
+            "dcp:context:windows:read"
+        );
+        assert_eq!(
+            Capability::AutomationMouseWrite.as_str(),
+            "dcp:automation:mouse:write"
+        );
     }
 
     #[test]
@@ -67,7 +73,10 @@ mod tests {
 
         assert!(response.result.is_none());
         assert!(response.error.is_some());
-        assert_eq!(response.error.unwrap().code, ErrorCode::PermissionDenied.code());
+        assert_eq!(
+            response.error.unwrap().code,
+            ErrorCode::PermissionDenied.code()
+        );
     }
 
     #[test]

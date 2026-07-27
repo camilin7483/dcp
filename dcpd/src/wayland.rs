@@ -34,9 +34,9 @@ pub struct WaylandBackend {
 
 impl WaylandBackend {
     pub fn new() -> Result<Self> {
-        let display_name = wayland_display()
-            .ok_or_else(|| anyhow::anyhow!("Not running on Wayland"))?;
-        
+        let display_name =
+            wayland_display().ok_or_else(|| anyhow::anyhow!("Not running on Wayland"))?;
+
         info!("Wayland backend initialized: {display_name}");
         Ok(Self { display_name })
     }
@@ -44,13 +44,14 @@ impl WaylandBackend {
     /// Get active window (stub - would use wlr-foreign-toplevel).
     pub async fn active_window(&self) -> Result<ActiveWindowInfo> {
         warn!("Wayland native window tracking not fully implemented, falling back to XWayland");
-        
+
         let output = tokio::process::Command::new("xdotool")
             .args(["getactivewindow", "getwindowname"])
-            .output().await?;
-        
+            .output()
+            .await?;
+
         let title = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        
+
         Ok(ActiveWindowInfo {
             id: 0,
             title,
@@ -71,11 +72,12 @@ impl WaylandBackend {
     /// Capture screen (stub - would use zwlr-screencopy).
     pub async fn capture_screen(&self) -> Result<Vec<u8>> {
         warn!("Wayland native screen capture not fully implemented, using grim fallback");
-        
+
         let output = tokio::process::Command::new("grim")
             .args(["-t", "png", "-"])
-            .output().await?;
-        
+            .output()
+            .await?;
+
         Ok(output.stdout)
     }
 }
@@ -83,8 +85,8 @@ impl WaylandBackend {
 /// Compositor-specific IPC for Hyprland.
 pub mod hyprland {
     use anyhow::Result;
-    use std::os::unix::net::UnixStream;
     use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
 
     /// Query Hyprland IPC socket.
     pub fn query_hyprland(request: &str) -> Result<String> {
@@ -94,10 +96,10 @@ pub mod hyprland {
 
         let mut stream = UnixStream::connect(&socket_path)?;
         stream.write_all(request.as_bytes())?;
-        
+
         let mut response = String::new();
         stream.read_to_string(&mut response)?;
-        
+
         Ok(response)
     }
 
@@ -117,33 +119,33 @@ pub mod hyprland {
 /// Compositor-specific IPC for Sway.
 pub mod sway {
     use anyhow::Result;
-    use std::os::unix::net::UnixStream;
     use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
 
     /// Query Sway IPC socket.
     pub fn query_sway(request_type: u32, payload: &str) -> Result<String> {
-        let socket_path = std::env::var("SWAYSOCK")
-            .map_err(|_| anyhow::anyhow!("SWAYSOCK not set"))?;
+        let socket_path =
+            std::env::var("SWAYSOCK").map_err(|_| anyhow::anyhow!("SWAYSOCK not set"))?;
 
         let mut stream = UnixStream::connect(&socket_path)?;
-        
+
         // Sway IPC protocol: magic + length + type + payload
         let magic = b"i3-ipc";
         let length = payload.len() as u32;
-        
+
         stream.write_all(magic)?;
         stream.write_all(&length.to_le_bytes())?;
         stream.write_all(&request_type.to_le_bytes())?;
         stream.write_all(payload.as_bytes())?;
-        
+
         // Read response
         let mut header = [0u8; 14]; // magic(6) + length(4) + type(4)
         stream.read_exact(&mut header)?;
-        
+
         let length = u32::from_le_bytes([header[6], header[7], header[8], header[9]]) as usize;
         let mut response = vec![0u8; length];
         stream.read_exact(&mut response)?;
-        
+
         Ok(String::from_utf8_lossy(&response).to_string())
     }
 

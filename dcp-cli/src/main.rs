@@ -1,15 +1,15 @@
 //! DCP CLI — command-line interface for Desktop Context Protocol.
 
-use anyhow::{Result, Context as AnyhowContext};
+use anyhow::{Context as AnyhowContext, Result};
 use clap::{Parser, Subcommand};
 use dcp_types::*;
 use serde_json::Value;
 use std::path::PathBuf;
 
+use futures::SinkExt;
 use futures::StreamExt;
 use tokio::net::UnixStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
-use futures::SinkExt;
 
 #[derive(Parser)]
 #[command(name = "dcp", version, about = "Desktop Context Protocol CLI")]
@@ -128,27 +128,27 @@ impl DcpClient {
             return Ok(None);
         }
 
-        let response_bytes = self.framed.next().await
-            .context("Connection closed")??;
+        let response_bytes = self.framed.next().await.context("Connection closed")??;
         let response: Response = serde_json::from_slice(&response_bytes)?;
         Ok(Some(response))
     }
 
     async fn receive_event(&mut self) -> Result<Response> {
-        let bytes = self.framed.next().await
-            .context("Connection closed")??;
+        let bytes = self.framed.next().await.context("Connection closed")??;
         let response: Response = serde_json::from_slice(&bytes)?;
         Ok(response)
     }
 }
 
-async fn cmd_query(socket_path: &PathBuf, selectors: Vec<String>, format: OutputFormat) -> Result<()> {
+async fn cmd_query(
+    socket_path: &PathBuf,
+    selectors: Vec<String>,
+    format: OutputFormat,
+) -> Result<()> {
     let mut client = DcpClient::connect(socket_path).await?;
 
-    let context_selectors: Vec<ContextSelector> = selectors
-        .iter()
-        .filter_map(|s| parse_selector(s))
-        .collect();
+    let context_selectors: Vec<ContextSelector> =
+        selectors.iter().filter_map(|s| parse_selector(s)).collect();
 
     let selectors_to_use = if context_selectors.is_empty() {
         vec![ContextSelector::ActiveWindow]
@@ -156,9 +156,13 @@ async fn cmd_query(socket_path: &PathBuf, selectors: Vec<String>, format: Output
         context_selectors
     };
 
-    let request = Request::new(1, "context.get", ContextGetParams {
-        selectors: selectors_to_use,
-    });
+    let request = Request::new(
+        1,
+        "context.get",
+        ContextGetParams {
+            selectors: selectors_to_use,
+        },
+    );
 
     if let Some(response) = client.send(&request).await? {
         if let Some(err) = response.error {
@@ -174,24 +178,29 @@ async fn cmd_query(socket_path: &PathBuf, selectors: Vec<String>, format: Output
 async fn cmd_subscribe(socket_path: &PathBuf, events: Vec<String>) -> Result<()> {
     let mut client = DcpClient::connect(socket_path).await?;
 
-    let event_types: Vec<EventType> = events
-        .iter()
-        .filter_map(|s| parse_event_type(s))
-        .collect();
+    let event_types: Vec<EventType> = events.iter().filter_map(|s| parse_event_type(s)).collect();
 
-    let request = Request::new(1, "events.subscribe", EventsSubscribeParams {
-        events: event_types,
-        batch: false,
-        batch_interval_ms: None,
-    });
+    let request = Request::new(
+        1,
+        "events.subscribe",
+        EventsSubscribeParams {
+            events: event_types,
+            batch: false,
+            batch_interval_ms: None,
+        },
+    );
 
     if let Some(response) = client.send(&request).await? {
         if let Some(err) = response.error {
             eprintln!("Error: {}", err.message);
             std::process::exit(1);
         }
-        let sub_id = response.result
-            .and_then(|r| r.get("subscriptionId").and_then(|v| v.as_str().map(String::from)))
+        let sub_id = response
+            .result
+            .and_then(|r| {
+                r.get("subscriptionId")
+                    .and_then(|v| v.as_str().map(String::from))
+            })
             .unwrap_or_default();
         println!("Subscribed: {sub_id}");
         println!("Listening for events... (Ctrl+C to exit)");
@@ -234,23 +243,35 @@ async fn cmd_status(socket_path: &PathBuf, format: OutputFormat) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_session(socket_path: &PathBuf, action: SessionAction, format: OutputFormat) -> Result<()> {
+async fn cmd_session(
+    socket_path: &PathBuf,
+    action: SessionAction,
+    format: OutputFormat,
+) -> Result<()> {
     let mut client = DcpClient::connect(socket_path).await?;
 
     match action {
         SessionAction::Create { name } => {
-            let request = Request::new(1, "session.create", SessionCreateParams {
-                client_name: name,
-                capabilities: Capability::default_local(),
-                encoding: None,
-            });
+            let request = Request::new(
+                1,
+                "session.create",
+                SessionCreateParams {
+                    client_name: name,
+                    capabilities: Capability::default_local(),
+                    encoding: None,
+                },
+            );
 
             if let Some(response) = client.send(&request).await? {
                 print_value(response.result.as_ref(), format);
             }
         }
         SessionAction::Close { session_id } => {
-            let request = Request::new(1, "session.close", serde_json::json!({"sessionId": session_id}));
+            let request = Request::new(
+                1,
+                "session.close",
+                serde_json::json!({"sessionId": session_id}),
+            );
             if let Some(response) = client.send(&request).await? {
                 print_value(response.result.as_ref(), format);
             }
@@ -284,9 +305,13 @@ async fn cmd_inspect(socket_path: &PathBuf, format: OutputFormat) -> Result<()> 
         ContextSelector::Notifications,
     ];
 
-    let request = Request::new(1, "context.get", ContextGetParams {
-        selectors: all_selectors,
-    });
+    let request = Request::new(
+        1,
+        "context.get",
+        ContextGetParams {
+            selectors: all_selectors,
+        },
+    );
 
     if let Some(response) = client.send(&request).await? {
         if let Some(err) = response.error {
@@ -302,9 +327,13 @@ async fn cmd_inspect(socket_path: &PathBuf, format: OutputFormat) -> Result<()> 
 async fn cmd_benchmark(socket_path: &PathBuf, iterations: u32) -> Result<()> {
     let mut client = DcpClient::connect(socket_path).await?;
 
-    let request = Request::new(1, "context.get", ContextGetParams {
-        selectors: vec![ContextSelector::ActiveWindow],
-    });
+    let request = Request::new(
+        1,
+        "context.get",
+        ContextGetParams {
+            selectors: vec![ContextSelector::ActiveWindow],
+        },
+    );
 
     let mut latencies = Vec::with_capacity(iterations as usize);
 
@@ -342,7 +371,10 @@ fn print_value(value: Option<&Value>, format: OutputFormat) {
             println!("{}", serde_json::to_string(value).unwrap_or_default());
         }
         OutputFormat::Pretty => {
-            println!("{}", serde_json::to_string_pretty(value).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(value).unwrap_or_default()
+            );
         }
         OutputFormat::Table => {
             if let Some(obj) = value.as_object() {
@@ -356,7 +388,10 @@ fn print_value(value: Option<&Value>, format: OutputFormat) {
                     }
                 }
             } else {
-                println!("{}", serde_json::to_string_pretty(value).unwrap_or_default());
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(value).unwrap_or_default()
+                );
             }
         }
     }

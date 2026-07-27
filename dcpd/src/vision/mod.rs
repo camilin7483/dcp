@@ -5,5 +5,5 @@
 //! - Wayland: `grim` or `slurp`
 
 pub mod capture;
-pub mod ocr;
 pub mod detection;
+pub mod ocr;

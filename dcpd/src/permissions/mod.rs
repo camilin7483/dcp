@@ -1,8 +1,8 @@
 use crate::server::session::Session;
+use base64::Engine;
 use dcp_types::Capability;
 use dcp_types::ErrorCode;
 use std::sync::Arc;
-use base64::Engine;
 
 /// Manages permission grants and capability tokens.
 #[derive(Clone)]
@@ -91,11 +91,11 @@ impl PermissionManager {
         };
 
         let payload = format!("{session_id}|{perm_hash}|{now}|{expires_at}");
-        let mut mac = Hmac::<Sha256>::new_from_slice(&self.hmac_secret)
-            .expect("HMAC key length is valid");
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(&self.hmac_secret).expect("HMAC key length is valid");
         mac.update(payload.as_bytes());
-        let signature = base64::engine::general_purpose::STANDARD
-            .encode(mac.finalize().into_bytes());
+        let signature =
+            base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
 
         format!("dcp_v1.{session_id}.{perm_hash}.{signature}")
     }
@@ -110,7 +110,8 @@ impl PermissionManager {
         let perm_hash_b64 = parts[2];
 
         let perm_bytes = base64::engine::general_purpose::STANDARD
-            .decode(perm_hash_b64).ok()?;
+            .decode(perm_hash_b64)
+            .ok()?;
         let perm_str = String::from_utf8(perm_bytes).ok()?;
 
         let capabilities: Vec<Capability> = perm_str

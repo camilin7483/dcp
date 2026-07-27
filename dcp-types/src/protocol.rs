@@ -13,7 +13,11 @@ pub struct Request {
 }
 
 impl Request {
-    pub fn new(id: impl Into<RequestId>, method: impl Into<String>, params: impl Serialize) -> Self {
+    pub fn new(
+        id: impl Into<RequestId>,
+        method: impl Into<String>,
+        params: impl Serialize,
+    ) -> Self {
         Self {
             jsonrpc: "2.0".into(),
             id: Some(id.into()),

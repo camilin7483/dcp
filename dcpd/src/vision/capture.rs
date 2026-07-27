@@ -2,9 +2,9 @@
 //!
 //! Uses `import` (ImageMagick) on X11 and `grim` on Wayland.
 
-use anyhow::{Result, Context};
-use dcp_types::{CaptureTarget, ImageFormat, VisionCaptureParams, VisionCaptureResult, Rect};
+use anyhow::{Context, Result};
 use base64::Engine;
+use dcp_types::{CaptureTarget, ImageFormat, Rect, VisionCaptureParams, VisionCaptureResult};
 use tracing::warn;
 
 /// Capture a screenshot on Linux.
@@ -54,7 +54,8 @@ pub async fn capture_screen(params: &VisionCaptureParams) -> Result<VisionCaptur
 async fn capture_grim(_monitor_id: Option<&u64>) -> Result<(Vec<u8>, u32, u32, ImageFormat)> {
     let output = tokio::process::Command::new("grim")
         .args(["-t", "png", "-"])
-        .output().await
+        .output()
+        .await
         .context("grim not found — install it for Wayland screenshots")?;
 
     if !output.status.success() {
@@ -73,11 +74,17 @@ async fn capture_grim(_monitor_id: Option<&u64>) -> Result<(Vec<u8>, u32, u32, I
 async fn capture_grim_region(bounds: &Rect) -> Result<(Vec<u8>, u32, u32, ImageFormat)> {
     let output = tokio::process::Command::new("grim")
         .args([
-            "-t", "png",
-            "-g", &format!("{}x{}+{}+{}", bounds.width, bounds.height, bounds.x, bounds.y),
+            "-t",
+            "png",
+            "-g",
+            &format!(
+                "{}x{}+{}+{}",
+                bounds.width, bounds.height, bounds.x, bounds.y
+            ),
             "-",
         ])
-        .output().await
+        .output()
+        .await
         .context("grim not found")?;
 
     if !output.status.success() {
@@ -103,7 +110,8 @@ async fn capture_import_x11(monitor_id: Option<&u64>) -> Result<(Vec<u8>, u32, u
 
     let output = tokio::process::Command::new("import")
         .args(&args)
-        .output().await
+        .output()
+        .await
         .context("import not found — install ImageMagick for X11 screenshots")?;
 
     if !output.status.success() {
@@ -122,11 +130,17 @@ async fn capture_import_x11(monitor_id: Option<&u64>) -> Result<(Vec<u8>, u32, u
 async fn capture_import_x11_region(bounds: &Rect) -> Result<(Vec<u8>, u32, u32, ImageFormat)> {
     let output = tokio::process::Command::new("import")
         .args([
-            "-window", "root",
-            "-crop", &format!("{}x{}+{}+{}", bounds.width, bounds.height, bounds.x, bounds.y),
+            "-window",
+            "root",
+            "-crop",
+            &format!(
+                "{}x{}+{}+{}",
+                bounds.width, bounds.height, bounds.x, bounds.y
+            ),
             "PNG:-",
         ])
-        .output().await
+        .output()
+        .await
         .context("import not found")?;
 
     if !output.status.success() {
@@ -145,7 +159,8 @@ async fn capture_import_x11_region(bounds: &Rect) -> Result<(Vec<u8>, u32, u32, 
 async fn capture_window_x11(window_id: u64) -> Result<(Vec<u8>, u32, u32, ImageFormat)> {
     let output = tokio::process::Command::new("import")
         .args(["-window", &window_id.to_string(), "PNG:-"])
-        .output().await
+        .output()
+        .await
         .context("import not found")?;
 
     if !output.status.success() {

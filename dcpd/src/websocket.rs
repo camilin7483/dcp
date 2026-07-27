@@ -12,7 +12,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 use crate::platform::PlatformBackend;
 use crate::server::{Dispatcher, Session};
@@ -30,13 +30,21 @@ impl<B: PlatformBackend + ?Sized + 'static> WebSocketServer<B> {
         dispatcher: Arc<Dispatcher<B>>,
         tls_config: Option<Arc<rustls::ServerConfig>>,
     ) -> Self {
-        Self { addr, dispatcher, tls_config }
+        Self {
+            addr,
+            dispatcher,
+            tls_config,
+        }
     }
 
     /// Run the WebSocket server.
     pub async fn run(&self) -> Result<()> {
         let listener = TcpListener::bind(self.addr).await?;
-        let scheme = if self.tls_config.is_some() { "wss" } else { "ws" };
+        let scheme = if self.tls_config.is_some() {
+            "wss"
+        } else {
+            "ws"
+        };
         info!("WebSocket server listening on {scheme}://{}", self.addr);
 
         loop {
@@ -51,7 +59,10 @@ impl<B: PlatformBackend + ?Sized + 'static> WebSocketServer<B> {
                             let acceptor = TlsAcceptor::from(tls_config);
                             match acceptor.accept(stream).await {
                                 Ok(tls_stream) => {
-                                    if let Err(e) = Self::handle_ws_handshake(tls_stream, dispatcher, addr).await {
+                                    if let Err(e) =
+                                        Self::handle_ws_handshake(tls_stream, dispatcher, addr)
+                                            .await
+                                    {
                                         warn!("WebSocket connection error from {addr}: {e}");
                                     }
                                 }
@@ -59,7 +70,9 @@ impl<B: PlatformBackend + ?Sized + 'static> WebSocketServer<B> {
                                     warn!("TLS handshake failed from {addr}: {e}");
                                 }
                             }
-                        } else if let Err(e) = Self::handle_ws_handshake(stream, dispatcher, addr).await {
+                        } else if let Err(e) =
+                            Self::handle_ws_handshake(stream, dispatcher, addr).await
+                        {
                             warn!("WebSocket connection error from {addr}: {e}");
                         }
                     });
@@ -119,7 +132,8 @@ impl<B: PlatformBackend + ?Sized + 'static> WebSocketServer<B> {
                                     .and_then(|v| v.get("sessionId"))
                                     .and_then(|v| v.as_str());
                                 if let Some(sid) = session_id {
-                                    if let Some(s) = dispatcher.session_manager.get_session(sid).await
+                                    if let Some(s) =
+                                        dispatcher.session_manager.get_session(sid).await
                                     {
                                         session = Some(s);
                                     }
@@ -171,15 +185,28 @@ impl<B: PlatformBackend + ?Sized + 'static> WebSocketServer<B> {
 
 /// Load TLS configuration from PEM certificate and key files.
 pub fn load_tls_config(cert_path: &Path, key_path: &Path) -> Result<Arc<rustls::ServerConfig>> {
-    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs1KeyDer, PrivatePkcs8KeyDer};
+    use rustls::pki_types::{
+        CertificateDer, PrivateKeyDer, PrivatePkcs1KeyDer, PrivatePkcs8KeyDer,
+    };
 
     let certs = {
-        let file = std::fs::File::open(cert_path)
-            .map_err(|e| anyhow::anyhow!("Failed to open certificate '{}': {}", cert_path.display(), e))?;
+        let file = std::fs::File::open(cert_path).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to open certificate '{}': {}",
+                cert_path.display(),
+                e
+            )
+        })?;
         let mut reader = std::io::BufReader::new(file);
         rustls_pemfile::certs(&mut reader)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| anyhow::anyhow!("Failed to parse certificates from '{}': {}", cert_path.display(), e))?
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to parse certificates from '{}': {}",
+                    cert_path.display(),
+                    e
+                )
+            })?
     };
 
     let key_data = std::fs::read(key_path)
@@ -190,7 +217,13 @@ pub fn load_tls_config(cert_path: &Path, key_path: &Path) -> Result<Arc<rustls::
         if let Some(key) = rustls_pemfile::pkcs8_private_keys(&mut reader)
             .next()
             .transpose()
-            .map_err(|e| anyhow::anyhow!("Failed to parse PKCS#8 key from '{}': {}", key_path.display(), e))?
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to parse PKCS#8 key from '{}': {}",
+                    key_path.display(),
+                    e
+                )
+            })?
         {
             PrivateKeyDer::from(PrivatePkcs8KeyDer::from(key))
         } else {
@@ -198,7 +231,13 @@ pub fn load_tls_config(cert_path: &Path, key_path: &Path) -> Result<Arc<rustls::
             if let Some(key) = rustls_pemfile::rsa_private_keys(&mut reader)
                 .next()
                 .transpose()
-                .map_err(|e| anyhow::anyhow!("Failed to parse RSA key from '{}': {}", key_path.display(), e))?
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to parse RSA key from '{}': {}",
+                        key_path.display(),
+                        e
+                    )
+                })?
             {
                 PrivateKeyDer::from(PrivatePkcs1KeyDer::from(key))
             } else {
@@ -207,10 +246,8 @@ pub fn load_tls_config(cert_path: &Path, key_path: &Path) -> Result<Arc<rustls::
         }
     };
 
-    let cert_chain: Vec<CertificateDer<'static>> = certs
-        .into_iter()
-        .map(CertificateDer::from)
-        .collect();
+    let cert_chain: Vec<CertificateDer<'static>> =
+        certs.into_iter().map(CertificateDer::from).collect();
 
     let config = rustls::ServerConfig::builder()
         .with_no_client_auth()
@@ -221,5 +258,6 @@ pub fn load_tls_config(cert_path: &Path, key_path: &Path) -> Result<Arc<rustls::
 
 /// Parse a socket address from a string.
 pub fn parse_addr(addr: &str) -> Result<SocketAddr> {
-    addr.parse().map_err(|e| anyhow::anyhow!("Invalid address '{}': {}", addr, e))
+    addr.parse()
+        .map_err(|e| anyhow::anyhow!("Invalid address '{}': {}", addr, e))
 }

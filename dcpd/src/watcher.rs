@@ -2,10 +2,10 @@
 //!
 //! Watches specified paths for changes and emits events to the DCP event bus.
 
-use anyhow::Result;
-use dcp_types::{EventType, EventData, FileEventData, SystemEvent};
 use crate::events::EventBus;
-use notify::{Watcher, RecursiveMode, Event, EventKind};
+use anyhow::Result;
+use dcp_types::{EventData, EventType, FileEventData, SystemEvent};
+use notify::{Event, EventKind, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -33,7 +33,7 @@ impl FileWatcher {
     /// Start watching a path for changes.
     pub async fn watch(&self, path: &Path, recursive: bool) -> Result<()> {
         let tx = self.watch_tx.clone();
-        
+
         let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
             let _ = tx.blocking_send(res);
         })?;

@@ -4,14 +4,14 @@
 //! independent processes, monitors their health, and restarts crashed plugins.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Child;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 use crate::events::EventBus;
-use dcp_types::{EventType, EventData, PluginEventData, SystemEvent};
+use dcp_types::{EventData, EventType, PluginEventData, SystemEvent};
 
 /// Plugin host — discovers, spawns, and supervises plugin processes.
 pub struct PluginHost {
@@ -46,19 +46,23 @@ impl PluginHost {
                 let manifest_path = path.join("dcp-plugin.json");
                 if manifest_path.exists() {
                     match std::fs::read_to_string(&manifest_path) {
-                        Ok(content) => {
-                            match serde_json::from_str::<PluginManifest>(&content) {
-                                Ok(manifest) => {
-                                    info!("Discovered plugin: {} v{}", manifest.plugin_id, manifest.version);
-                                    manifests.push(manifest);
-                                }
-                                Err(e) => {
-                                    warn!("Invalid manifest at {}: {e}", manifest_path.display());
-                                }
+                        Ok(content) => match serde_json::from_str::<PluginManifest>(&content) {
+                            Ok(manifest) => {
+                                info!(
+                                    "Discovered plugin: {} v{}",
+                                    manifest.plugin_id, manifest.version
+                                );
+                                manifests.push(manifest);
                             }
-                        }
+                            Err(e) => {
+                                warn!("Invalid manifest at {}: {e}", manifest_path.display());
+                            }
+                        },
                         Err(e) => {
-                            warn!("Failed to read manifest at {}: {e}", manifest_path.display());
+                            warn!(
+                                "Failed to read manifest at {}: {e}",
+                                manifest_path.display()
+                            );
                         }
                     }
                 }
@@ -103,8 +107,7 @@ impl PluginHost {
         }
 
         // Create plugin socket directory
-        let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-            .unwrap_or_else(|_| "/tmp".to_string());
+        let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
         let plugin_socket_dir = PathBuf::from(format!("{runtime_dir}/dcpd/plugins"));
         std::fs::create_dir_all(&plugin_socket_dir)?;
 
@@ -134,7 +137,10 @@ impl PluginHost {
             status: PluginStatus::Running,
         };
 
-        self.plugins.write().await.insert(plugin_id.clone(), instance);
+        self.plugins
+            .write()
+            .await
+            .insert(plugin_id.clone(), instance);
 
         // Emit plugin registered event
         let event = SystemEvent::new(
@@ -217,17 +223,20 @@ impl PluginHost {
             let mut plugins = self.plugins.write().await;
             if let Some(instance) = plugins.get_mut(&id) {
                 instance.restart_count += 1;
-                warn!("Restarting plugin {id} (attempt {}/{})",
-                    instance.restart_count, self.max_restarts);
+                warn!(
+                    "Restarting plugin {id} (attempt {}/{})",
+                    instance.restart_count, self.max_restarts
+                );
 
                 let plugin_dir = self.plugin_dir.join(&id);
                 let executable = plugin_dir.join(&manifest.executable);
-                let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-                    .unwrap_or_else(|_| "/tmp".to_string());
+                let runtime_dir =
+                    std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
                 let socket_path = format!("{runtime_dir}/dcpd/plugins/{id}.sock");
 
                 match tokio::process::Command::new(&executable)
-                    .arg("--socket").arg(&socket_path)
+                    .arg("--socket")
+                    .arg(&socket_path)
                     .current_dir(&plugin_dir)
                     .spawn()
                 {
@@ -258,8 +267,11 @@ impl PluginHost {
 
     /// List all plugins with their status.
     pub async fn list_plugins(&self) -> Vec<PluginInfo> {
-        self.plugins.read().await.iter().map(|(id, instance)| {
-            PluginInfo {
+        self.plugins
+            .read()
+            .await
+            .iter()
+            .map(|(id, instance)| PluginInfo {
                 id: id.clone(),
                 version: instance.manifest.version.clone(),
                 pid: instance.pid,
@@ -268,8 +280,8 @@ impl PluginHost {
                 socket_path: instance.socket_path.clone(),
                 provides_context: instance.manifest.capabilities.provides_context.clone(),
                 emits_events: instance.manifest.capabilities.emits_events.clone(),
-            }
-        }).collect()
+            })
+            .collect()
     }
 }
 

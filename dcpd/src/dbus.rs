@@ -3,9 +3,9 @@
 //! Subscribes to org.freedesktop.Notifications on the session bus
 //! and forwards notification events into the DCP event bus.
 
-use anyhow::Result;
-use dcp_types::{EventType, EventData, NotificationEventData, SystemEvent};
 use crate::events::EventBus;
+use anyhow::Result;
+use dcp_types::{EventData, EventType, NotificationEventData, SystemEvent};
 use tracing::{info, warn};
 
 /// Listens for D-Bus notification signals and publishes them to the event bus.
@@ -40,24 +40,31 @@ pub async fn run_notification_listener(event_bus: EventBus) -> Result<()> {
         let body = msg.body();
 
         let data = match body.deserialize::<(
-            String,    // app_name
-            u32,       // replaces_id
-            String,    // app_icon
-            String,    // summary
-            String,    // body
-            Vec<String>, // actions
+            String,                                                   // app_name
+            u32,                                                      // replaces_id
+            String,                                                   // app_icon
+            String,                                                   // summary
+            String,                                                   // body
+            Vec<String>,                                              // actions
             std::collections::HashMap<String, zbus::zvariant::Value>, // hints
-            i32,       // expire_timeout
+            i32,                                                      // expire_timeout
         )>() {
-            Ok((app_name, _replaces_id, _app_icon, summary, notification_body, _actions, _hints, _expire_timeout)) => {
-                EventData::Notification(NotificationEventData {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    app_name,
-                    title: summary,
-                    body: Some(notification_body),
-                    action: None,
-                })
-            }
+            Ok((
+                app_name,
+                _replaces_id,
+                _app_icon,
+                summary,
+                notification_body,
+                _actions,
+                _hints,
+                _expire_timeout,
+            )) => EventData::Notification(NotificationEventData {
+                id: uuid::Uuid::new_v4().to_string(),
+                app_name,
+                title: summary,
+                body: Some(notification_body),
+                action: None,
+            }),
             Err(e) => {
                 warn!("Failed to parse notification: {e}");
                 continue;

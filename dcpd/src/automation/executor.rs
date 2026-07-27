@@ -1,8 +1,8 @@
 //! Linux automation backend using xdotool, xclip, xdg-open.
 
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
-use dcp_types::{MouseButton, KeyModifier};
+use dcp_types::{KeyModifier, MouseButton};
 use std::process::Command;
 
 use super::AutomationBackend;
@@ -47,16 +47,20 @@ impl AutomationBackend for LinuxAutomation {
             MouseButton::Right => "3",
             MouseButton::Middle => "2",
         };
-        Self::xdotool(&[
-            "mousemove", &x.to_string(), &y.to_string(),
-            "click", btn,
-        ])
+        Self::xdotool(&["mousemove", &x.to_string(), &y.to_string(), "click", btn])
     }
 
     async fn double_click(&self, x: i32, y: i32) -> Result<()> {
         Self::xdotool(&[
-            "mousemove", &x.to_string(), &y.to_string(),
-            "click", "--repeat", "2", "--delay", "50", "1",
+            "mousemove",
+            &x.to_string(),
+            &y.to_string(),
+            "click",
+            "--repeat",
+            "2",
+            "--delay",
+            "50",
+            "1",
         ])
     }
 
@@ -85,12 +89,15 @@ impl AutomationBackend for LinuxAutomation {
     }
 
     async fn press_key(&self, key: &str, modifiers: &[KeyModifier]) -> Result<()> {
-        let mod_str: Vec<&str> = modifiers.iter().map(|m| match m {
-            KeyModifier::Shift => "shift",
-            KeyModifier::Control => "ctrl",
-            KeyModifier::Alt => "alt",
-            KeyModifier::Meta => "super",
-        }).collect();
+        let mod_str: Vec<&str> = modifiers
+            .iter()
+            .map(|m| match m {
+                KeyModifier::Shift => "shift",
+                KeyModifier::Control => "ctrl",
+                KeyModifier::Alt => "alt",
+                KeyModifier::Meta => "super",
+            })
+            .collect();
 
         let combined = if mod_str.is_empty() {
             key.to_string()
@@ -131,7 +138,12 @@ impl AutomationBackend for LinuxAutomation {
         Ok(())
     }
 
-    async fn launch_app(&self, executable: &str, args: &[String], working_dir: Option<&str>) -> Result<u32> {
+    async fn launch_app(
+        &self,
+        executable: &str,
+        args: &[String],
+        working_dir: Option<&str>,
+    ) -> Result<u32> {
         let mut cmd = Command::new(executable);
         cmd.args(args);
         if let Some(dir) = working_dir {
@@ -151,17 +163,21 @@ impl AutomationBackend for LinuxAutomation {
 
     async fn move_window(&self, window_id: u64, x: i32, y: i32) -> Result<()> {
         Self::xdotool(&[
-            "windowmove", "--sync",
+            "windowmove",
+            "--sync",
             &window_id.to_string(),
-            &x.to_string(), &y.to_string(),
+            &x.to_string(),
+            &y.to_string(),
         ])
     }
 
     async fn resize_window(&self, window_id: u64, width: u32, height: u32) -> Result<()> {
         Self::xdotool(&[
-            "windowsize", "--sync",
+            "windowsize",
+            "--sync",
             &window_id.to_string(),
-            &width.to_string(), &height.to_string(),
+            &width.to_string(),
+            &height.to_string(),
         ])
     }
 
@@ -176,14 +192,26 @@ impl AutomationBackend for LinuxAutomation {
     async fn maximize_window(&self, window_id: u64) -> Result<()> {
         // Use wmctrl if available
         let _ = Command::new("wmctrl")
-            .args(["-i", "-r", &window_id.to_string(), "-b", "add,maximized_vert,maximized_horz"])
+            .args([
+                "-i",
+                "-r",
+                &window_id.to_string(),
+                "-b",
+                "add,maximized_vert,maximized_horz",
+            ])
             .output();
         Ok(())
     }
 
     async fn restore_window(&self, window_id: u64) -> Result<()> {
         let _ = Command::new("wmctrl")
-            .args(["-i", "-r", &window_id.to_string(), "-b", "remove,maximized_vert,maximized_horz"])
+            .args([
+                "-i",
+                "-r",
+                &window_id.to_string(),
+                "-b",
+                "remove,maximized_vert,maximized_horz",
+            ])
             .output();
         Ok(())
     }

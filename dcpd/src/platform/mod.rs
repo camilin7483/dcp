@@ -1,13 +1,13 @@
 //! Platform backend: OS-specific implementations for context collection.
 
 pub mod linux;
-pub mod windows;
 pub mod macos;
+pub mod windows;
 
 use anyhow::Result;
+use async_trait::async_trait;
 use dcp_types::*;
 use std::sync::Arc;
-use async_trait::async_trait;
 
 use crate::automation::AutomationBackend;
 

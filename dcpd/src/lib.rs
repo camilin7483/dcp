@@ -1,15 +1,16 @@
 //! DCP Daemon — Desktop Context Protocol core server.
 
-pub mod automation;
 pub mod audit;
+pub mod automation;
 pub mod cache;
 pub mod config;
 pub mod dbus;
 pub mod events;
+pub mod metrics;
 pub mod permissions;
-pub mod ratelimit;
 pub mod platform;
 pub mod plugins;
+pub mod ratelimit;
 pub mod server;
 pub mod terminal;
 pub mod vision;
@@ -21,7 +22,9 @@ use anyhow::Result;
 use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{info, Level};
+use tracing::{Level, info};
+
+use crate::metrics::MetricsRegistry;
 
 /// DCP Daemon — Desktop Context Protocol server.
 #[derive(Parser, Debug)]
@@ -79,30 +82,28 @@ pub struct DaemonArgs {
 impl DaemonArgs {
     pub fn socket_path(&self) -> PathBuf {
         self.socket.clone().unwrap_or_else(|| {
-            let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-                .unwrap_or_else(|_| "/tmp".to_string());
+            let runtime_dir =
+                std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
             PathBuf::from(format!("{runtime_dir}/dcpd.sock"))
         })
     }
 
     pub fn plugin_directory(&self) -> PathBuf {
         self.plugin_dir.clone().unwrap_or_else(|| {
-            let data_dir = std::env::var("XDG_DATA_HOME")
-                .unwrap_or_else(|_| {
-                    let home = std::env::var("HOME").unwrap_or_else(|_| "/home".to_string());
-                    format!("{home}/.local/share")
-                });
+            let data_dir = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| "/home".to_string());
+                format!("{home}/.local/share")
+            });
             PathBuf::from(format!("{data_dir}/dcpd/plugins"))
         })
     }
 
     pub fn audit_directory(&self) -> PathBuf {
         self.audit_dir.clone().unwrap_or_else(|| {
-            let data_dir = std::env::var("XDG_DATA_HOME")
-                .unwrap_or_else(|_| {
-                    let home = std::env::var("HOME").unwrap_or_else(|_| "/home".to_string());
-                    format!("{home}/.local/share")
-                });
+            let data_dir = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| "/home".to_string());
+                format!("{home}/.local/share")
+            });
             PathBuf::from(format!("{data_dir}/dcpd/audit"))
         })
     }
@@ -141,12 +142,12 @@ pub async fn run(args: DaemonArgs) -> Result<()> {
     }
 
     // Set up graceful shutdown
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
 
     let shutdown = Arc::new(tokio::sync::Notify::new());
-    let shutdown_clone = shutdown.clone();
+    let _shutdown_clone = shutdown.clone();
 
-    let sigint = {
+    let _sigint = {
         let s = shutdown.clone();
         tokio::spawn(async move {
             let _ = tokio::signal::ctrl_c().await;
@@ -155,17 +156,18 @@ pub async fn run(args: DaemonArgs) -> Result<()> {
         })
     };
 
-    let sigterm = {
+    let _sigterm = {
         let s = shutdown.clone();
         tokio::spawn(async move {
-            let mut stream = signal(SignalKind::terminate()).expect("failed to create SIGTERM handler");
+            let mut stream =
+                signal(SignalKind::terminate()).expect("failed to create SIGTERM handler");
             stream.recv().await;
             tracing::info!("SIGTERM received");
             s.notify_waiters();
         })
     };
 
-    let sigquit = {
+    let _sigquit = {
         let s = shutdown.clone();
         tokio::spawn(async move {
             let mut stream = signal(SignalKind::quit()).expect("failed to create SIGQUIT handler");
@@ -182,7 +184,11 @@ pub async fn run(args: DaemonArgs) -> Result<()> {
     let audit_logger = audit::AuditLogger::new(args.audit_directory());
     let perm_manager = permissions::PermissionManager::new();
     let rate_limiter = ratelimit::RateLimiter::default();
-    let plugin_host = Arc::new(plugins::PluginHost::new(args.plugin_directory(), event_bus.clone()));
+    let plugin_host = Arc::new(plugins::PluginHost::new(
+        args.plugin_directory(),
+        event_bus.clone(),
+    ));
+    let metrics = MetricsRegistry::new();
     let session_manager = server::SessionManager::new(perm_manager.clone());
     let dispatcher = server::Dispatcher::new(
         backend,
@@ -193,6 +199,7 @@ pub async fn run(args: DaemonArgs) -> Result<()> {
         session_manager,
         automation,
         rate_limiter.clone(),
+        metrics,
     );
 
     // Auto-discover and start plugins
@@ -216,7 +223,9 @@ pub async fn run(args: DaemonArgs) -> Result<()> {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
         loop {
             interval.tick().await;
-            rate_cleanup.cleanup_stale(std::time::Duration::from_secs(3600)).await;
+            rate_cleanup
+                .cleanup_stale(std::time::Duration::from_secs(3600))
+                .await;
         }
     });
 
@@ -242,10 +251,16 @@ pub async fn run(args: DaemonArgs) -> Result<()> {
         let watcher_bus = event_bus.clone();
         let watch_paths = if daemon_config.watch_paths.is_empty() {
             vec![
-                std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/home")),
+                std::env::var("HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|_| PathBuf::from("/home")),
             ]
         } else {
-            daemon_config.watch_paths.iter().map(PathBuf::from).collect()
+            daemon_config
+                .watch_paths
+                .iter()
+                .map(PathBuf::from)
+                .collect()
         };
         tokio::spawn(async move {
             if let Err(e) = watcher::run_file_watcher(watcher_bus, watch_paths).await {
@@ -276,7 +291,8 @@ pub async fn run(args: DaemonArgs) -> Result<()> {
                 )?;
                 let ws_dispatcher = dispatcher.clone();
                 tokio::spawn(async move {
-                    let ws_server = websocket::WebSocketServer::new(addr, ws_dispatcher, Some(tls_config));
+                    let ws_server =
+                        websocket::WebSocketServer::new(addr, ws_dispatcher, Some(tls_config));
                     if let Err(e) = ws_server.run().await {
                         tracing::error!("WebSocket server error: {e}");
                     }

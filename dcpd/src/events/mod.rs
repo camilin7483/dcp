@@ -8,7 +8,7 @@ use dcp_types::{EventType, SystemEvent};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, mpsc, watch, RwLock};
+use tokio::sync::{RwLock, broadcast, mpsc, watch};
 use tokio::time;
 use tracing::warn;
 
@@ -68,7 +68,10 @@ impl EventBus {
             cancel_tx: Some(cancel_tx),
         };
 
-        self.subscriptions.write().await.insert(sub_id.clone(), state);
+        self.subscriptions
+            .write()
+            .await
+            .insert(sub_id.clone(), state);
 
         // Spawn the event delivery task
         let subs = self.subscriptions.clone();
@@ -133,7 +136,9 @@ impl EventBus {
                 .unwrap_or(Duration::ZERO);
 
             if should_batch && !batch_buffer.is_empty() {
-                batch_deadline.as_mut().reset(time::Instant::now() + interval);
+                batch_deadline
+                    .as_mut()
+                    .reset(time::Instant::now() + interval);
             }
 
             tokio::select! {

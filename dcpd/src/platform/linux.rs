@@ -115,11 +115,9 @@ impl LinuxBackend {
         T: Send + Default + 'static,
     {
         let path = path.to_string();
-        task::spawn_blocking(move || {
-            match std::fs::read_to_string(&path) {
-                Ok(content) => parser(&content),
-                Err(_) => T::default(),
-            }
+        task::spawn_blocking(move || match std::fs::read_to_string(&path) {
+            Ok(content) => parser(&content),
+            Err(_) => T::default(),
         })
         .await
         .unwrap_or_default()
@@ -129,7 +127,8 @@ impl LinuxBackend {
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         let output = tokio::process::Command::new("xdotool")
             .args(&args)
-            .output().await?;
+            .output()
+            .await?;
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
@@ -137,7 +136,8 @@ impl LinuxBackend {
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         let output = tokio::process::Command::new("xprop")
             .args(&args)
-            .output().await?;
+            .output()
+            .await?;
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
@@ -153,9 +153,8 @@ impl LinuxBackend {
             .unwrap_or_else(|_| "0".to_string());
         let pid: u32 = pid_str.parse().unwrap_or(0);
 
-        let app = Self::read_proc_file(&format!("/proc/{pid}/comm"), |c| {
-            c.trim().to_string()
-        }).await;
+        let app =
+            Self::read_proc_file(&format!("/proc/{pid}/comm"), |c| c.trim().to_string()).await;
 
         let geo = Self::xdotool_output(&["getwindowgeometry", "--shell", wid])
             .await
@@ -178,7 +177,9 @@ impl LinuxBackend {
             }
         }
 
-        let focused_id = Self::xdotool_output(&["getactivewindow"]).await.unwrap_or_default();
+        let focused_id = Self::xdotool_output(&["getactivewindow"])
+            .await
+            .unwrap_or_default();
         let is_focused = focused_id == wid;
 
         Ok(WindowInfo {
@@ -205,12 +206,14 @@ impl LinuxBackend {
 
             for line in content.lines() {
                 if line.starts_with("MemTotal:") {
-                    total_kb = line.split_whitespace()
+                    total_kb = line
+                        .split_whitespace()
                         .nth(1)
                         .and_then(|v| v.parse().ok())
                         .unwrap_or(0);
                 } else if line.starts_with("MemAvailable:") {
-                    available_kb = line.split_whitespace()
+                    available_kb = line
+                        .split_whitespace()
                         .nth(1)
                         .and_then(|v| v.parse().ok())
                         .unwrap_or(0);
@@ -218,7 +221,8 @@ impl LinuxBackend {
             }
 
             (total_kb / 1024, available_kb / 1024)
-        }).await
+        })
+        .await
     }
 
     async fn read_load_average() -> Option<[f64; 3]> {
@@ -233,7 +237,8 @@ impl LinuxBackend {
             } else {
                 None
             }
-        }).await
+        })
+        .await
     }
 
     fn is_hyprland(&self) -> bool {
@@ -245,7 +250,8 @@ impl LinuxBackend {
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         let output = tokio::process::Command::new("hyprctl")
             .args(&args)
-            .output().await?;
+            .output()
+            .await?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!("hyprctl failed: {stderr}");
@@ -262,14 +268,26 @@ impl LinuxBackend {
         if title.is_empty() {
             return None;
         }
-        if title.ends_with(".rs") || title.ends_with(".py") || title.ends_with(".ts") || title.ends_with(".js") {
+        if title.ends_with(".rs")
+            || title.ends_with(".py")
+            || title.ends_with(".ts")
+            || title.ends_with(".js")
+        {
             return Some(format!("Editing source file: {title}"));
         }
         let lower_class = class.to_lowercase();
-        if lower_class.contains("terminal") || lower_class.contains("kitty") || lower_class.contains("alacritty") || lower_class.contains("wezterm") {
+        if lower_class.contains("terminal")
+            || lower_class.contains("kitty")
+            || lower_class.contains("alacritty")
+            || lower_class.contains("wezterm")
+        {
             return Some(format!("Using terminal: {title}"));
         }
-        if lower_class.contains("firefox") || lower_class.contains("chrome") || lower_class.contains("chromium") || lower_class.contains("brave") {
+        if lower_class.contains("firefox")
+            || lower_class.contains("chrome")
+            || lower_class.contains("chromium")
+            || lower_class.contains("brave")
+        {
             return Some(format!("Browsing: {title}"));
         }
         if lower_class.contains("spotify") {
@@ -295,7 +313,8 @@ impl LinuxBackend {
                 }
             }
             0.0
-        }).await
+        })
+        .await
     }
 }
 
@@ -333,7 +352,9 @@ impl PlatformBackend for LinuxBackend {
                         .unwrap_or_default()
                         .trim()
                         .to_string()
-                }).await.unwrap_or_default();
+                })
+                .await
+                .unwrap_or_default();
 
                 let geo = Self::xdotool_output(&["getwindowgeometry", "--shell", &wid])
                     .await
@@ -357,17 +378,24 @@ impl PlatformBackend for LinuxBackend {
                 }
 
                 // Semantic context heuristic
-                let semantic = if title.ends_with(".rs") || title.ends_with(".py") || title.ends_with(".ts") {
-                    Some(format!("Editing source file: {title}"))
-                } else if title.contains("Terminal") || title.contains("alacritty") || title.contains("kitty") {
-                    Some(format!("Using terminal: {title}"))
-                } else if title.contains("Firefox") || title.contains("Chrome") || title.contains("Browser") {
-                    Some(format!("Browsing: {title}"))
-                } else if !title.is_empty() {
-                    Some(format!("Working in: {title}"))
-                } else {
-                    None
-                };
+                let semantic =
+                    if title.ends_with(".rs") || title.ends_with(".py") || title.ends_with(".ts") {
+                        Some(format!("Editing source file: {title}"))
+                    } else if title.contains("Terminal")
+                        || title.contains("alacritty")
+                        || title.contains("kitty")
+                    {
+                        Some(format!("Using terminal: {title}"))
+                    } else if title.contains("Firefox")
+                        || title.contains("Chrome")
+                        || title.contains("Browser")
+                    {
+                        Some(format!("Browsing: {title}"))
+                    } else if !title.is_empty() {
+                        Some(format!("Working in: {title}"))
+                    } else {
+                        None
+                    };
 
                 Ok(ActiveWindowInfo {
                     id: wid.parse().unwrap_or(0),
@@ -384,10 +412,8 @@ impl PlatformBackend for LinuxBackend {
                     match Self::hyprctl_json::<HyprWindow>(&["activewindow", "-j"]).await {
                         Ok(w) => {
                             let semantic = Self::semantic_context_for(&w.title, &w.class);
-                            let wid = u64::from_str_radix(
-                                w.address.trim_start_matches("0x"),
-                                16,
-                            ).unwrap_or(0);
+                            let wid = u64::from_str_radix(w.address.trim_start_matches("0x"), 16)
+                                .unwrap_or(0);
                             return Ok(ActiveWindowInfo {
                                 id: wid,
                                 title: w.title,
@@ -449,16 +475,15 @@ impl PlatformBackend for LinuxBackend {
                     .await
                     .unwrap_or_default();
 
-                let active: Option<HyprWindow> = Self::hyprctl_json(&["activewindow", "-j"]).await.ok();
+                let active: Option<HyprWindow> =
+                    Self::hyprctl_json(&["activewindow", "-j"]).await.ok();
                 let active_addr = active.as_ref().map(|w| w.address.as_str()).unwrap_or("");
 
                 Ok(clients
                     .into_iter()
                     .map(|w| {
-                        let wid = u64::from_str_radix(
-                            w.address.trim_start_matches("0x"),
-                            16,
-                        ).unwrap_or(0);
+                        let wid = u64::from_str_radix(w.address.trim_start_matches("0x"), 16)
+                            .unwrap_or(0);
                         WindowInfo {
                             id: wid,
                             title: w.title,
@@ -516,8 +541,8 @@ impl PlatformBackend for LinuxBackend {
                         .ok()
                         .map(|s| s.replace('\0', " ").trim().to_string());
 
-                    let stat_content = std::fs::read_to_string(format!("/proc/{pid}/stat"))
-                        .unwrap_or_default();
+                    let stat_content =
+                        std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
                     let stat_parts: Vec<&str> = stat_content.rsplitn(2, ')').collect();
                     let mut memory_mb = 0u64;
                     let mut status = ProcessStatus::Unknown;
@@ -525,9 +550,8 @@ impl PlatformBackend for LinuxBackend {
                     if stat_parts.len() >= 2 {
                         let fields: Vec<&str> = stat_parts[0].split_whitespace().collect();
                         if fields.len() >= 24 {
-                            let rss_pages: u64 = fields.get(21)
-                                .and_then(|v| v.parse().ok())
-                                .unwrap_or(0);
+                            let rss_pages: u64 =
+                                fields.get(21).and_then(|v| v.parse().ok()).unwrap_or(0);
                             memory_mb = (rss_pages * 4096) / (1024 * 1024);
 
                             let state = fields.get(0).copied().unwrap_or("");
@@ -568,8 +592,9 @@ impl PlatformBackend for LinuxBackend {
             }
 
             Ok(processes)
-        }).await
-          .context("blocking task failed")?
+        })
+        .await
+        .context("blocking task failed")?
     }
 
     async fn clipboard(&self) -> Result<ClipboardData> {
@@ -577,12 +602,12 @@ impl PlatformBackend for LinuxBackend {
             SessionType::X11 => {
                 let output = tokio::process::Command::new("xclip")
                     .args(["-selection", "clipboard", "-o"])
-                    .output().await?;
+                    .output()
+                    .await?;
                 String::from_utf8_lossy(&output.stdout).to_string()
             }
             SessionType::Wayland => {
-                let output = tokio::process::Command::new("wl-paste")
-                    .output().await?;
+                let output = tokio::process::Command::new("wl-paste").output().await?;
                 String::from_utf8_lossy(&output.stdout).to_string()
             }
             _ => String::new(),
@@ -675,7 +700,8 @@ impl PlatformBackend for LinuxBackend {
         if self.session_type == SessionType::X11 {
             let output = tokio::process::Command::new("xrandr")
                 .args(["--query"])
-                .output().await?;
+                .output()
+                .await?;
             let stdout = String::from_utf8_lossy(&output.stdout);
 
             let mut monitors = Vec::new();
@@ -704,8 +730,10 @@ impl PlatformBackend for LinuxBackend {
                             }
                         }
                         if part.contains("Hz") || part.ends_with('*') {
-                            refresh = part.trim_end_matches('*')
-                                .parse::<f64>().ok()
+                            refresh = part
+                                .trim_end_matches('*')
+                                .parse::<f64>()
+                                .ok()
                                 .map(|f| f as u32);
                         }
                     }
@@ -775,15 +803,19 @@ impl PlatformBackend for LinuxBackend {
                         .ok()
                         .map(|s| s.trim().to_string());
 
-                    let stats_rx = std::fs::read_to_string(format!("/sys/class/net/{name}/statistics/rx_bytes"))
-                        .ok()
-                        .and_then(|s| s.trim().parse::<u64>().ok())
-                        .unwrap_or(0);
+                    let stats_rx = std::fs::read_to_string(format!(
+                        "/sys/class/net/{name}/statistics/rx_bytes"
+                    ))
+                    .ok()
+                    .and_then(|s| s.trim().parse::<u64>().ok())
+                    .unwrap_or(0);
 
-                    let stats_tx = std::fs::read_to_string(format!("/sys/class/net/{name}/statistics/tx_bytes"))
-                        .ok()
-                        .and_then(|s| s.trim().parse::<u64>().ok())
-                        .unwrap_or(0);
+                    let stats_tx = std::fs::read_to_string(format!(
+                        "/sys/class/net/{name}/statistics/tx_bytes"
+                    ))
+                    .ok()
+                    .and_then(|s| s.trim().parse::<u64>().ok())
+                    .unwrap_or(0);
 
                     interfaces.push(NetworkInterface {
                         name,
@@ -808,14 +840,16 @@ impl PlatformBackend for LinuxBackend {
                 is_connected,
                 connectivity_type: connectivity,
             })
-        }).await
-          .context("blocking task failed")?
+        })
+        .await
+        .context("blocking task failed")?
     }
 
     async fn audio_devices(&self) -> Result<AudioDevicesInfo> {
         let output = tokio::process::Command::new("pactl")
             .args(["list", "sinks", "short"])
-            .output().await;
+            .output()
+            .await;
 
         let mut outputs = Vec::new();
         if let Ok(output) = output {
@@ -880,8 +914,9 @@ impl PlatformBackend for LinuxBackend {
                 is_charging,
                 time_remaining_seconds: None,
             })
-        }).await
-          .context("blocking task failed")?
+        })
+        .await
+        .context("blocking task failed")?
     }
 
     async fn workspace(&self) -> Result<WorkspaceInfo> {
@@ -898,10 +933,7 @@ impl PlatformBackend for LinuxBackend {
                     windows: 0,
                 });
 
-            let regular: Vec<&HyprWorkspace> = workspaces
-                .iter()
-                .filter(|w| w.id > 0)
-                .collect();
+            let regular: Vec<&HyprWorkspace> = workspaces.iter().filter(|w| w.id > 0).collect();
             let total = regular.len() as u32;
             let names: Vec<String> = regular.iter().map(|w| w.name.clone()).collect();
 
@@ -925,26 +957,34 @@ impl PlatformBackend for LinuxBackend {
         if self.session_type == SessionType::X11 {
             if let Ok(output) = tokio::process::Command::new("xprop")
                 .args(["-root", "_NET_CURRENT_DESKTOP"])
-                .output().await
+                .output()
+                .await
             {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                let current = stdout.split('=')
+                let current = stdout
+                    .split('=')
                     .nth(1)
                     .and_then(|s| s.trim().parse::<u32>().ok())
                     .unwrap_or(0);
 
                 if let Ok(output) = tokio::process::Command::new("xprop")
                     .args(["-root", "_NET_NUMBER_OF_DESKTOPS"])
-                    .output().await
+                    .output()
+                    .await
                 {
                     let stdout = String::from_utf8_lossy(&output.stdout);
-                    let total = stdout.split('=')
+                    let total = stdout
+                        .split('=')
                         .nth(1)
                         .and_then(|s| s.trim().parse::<u32>().ok())
                         .unwrap_or(1);
 
                     let names = (0..total).map(|i| format!("Desktop {i}")).collect();
-                    return Ok(WorkspaceInfo { current, total, names });
+                    return Ok(WorkspaceInfo {
+                        current,
+                        total,
+                        names,
+                    });
                 }
             }
         }
@@ -963,7 +1003,8 @@ impl PlatformBackend for LinuxBackend {
     async fn keyboard_focus(&self) -> Result<FocusInfo> {
         let output = tokio::process::Command::new("xdotool")
             .args(["getactivewindow", "getwindowname"])
-            .output().await?;
+            .output()
+            .await?;
         let title = String::from_utf8_lossy(&output.stdout).trim().to_string();
         Ok(FocusInfo {
             element_type: "window".to_string(),
@@ -982,14 +1023,17 @@ impl PlatformBackend for LinuxBackend {
                         continue;
                     }
                     let content = std::fs::read_to_string(&path).unwrap_or_default();
-                    let name = content.lines()
+                    let name = content
+                        .lines()
                         .find(|l| l.starts_with("Name="))
                         .map(|l| l.trim_start_matches("Name=").to_string())
                         .unwrap_or_default();
-                    let exec = content.lines()
+                    let exec = content
+                        .lines()
                         .find(|l| l.starts_with("Exec="))
                         .map(|l| l.trim_start_matches("Exec=").to_string());
-                    let cat = content.lines()
+                    let cat = content
+                        .lines()
                         .find(|l| l.starts_with("Categories="))
                         .map(|l| l.trim_start_matches("Categories=").to_string());
                     if !name.is_empty() {
@@ -1003,7 +1047,9 @@ impl PlatformBackend for LinuxBackend {
                 }
             }
             apps
-        }).await.unwrap_or_default();
+        })
+        .await
+        .unwrap_or_default();
         Ok(apps)
     }
 
@@ -1011,7 +1057,8 @@ impl PlatformBackend for LinuxBackend {
         if self.session_type == SessionType::X11 {
             if let Ok(output) = tokio::process::Command::new("xclip")
                 .args(["-selection", "primary", "-o"])
-                .output().await
+                .output()
+                .await
             {
                 let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !text.is_empty() {

@@ -63,8 +63,10 @@ impl BrowserPlugin {
     /// Parse browser title to extract page title and URL.
     fn parse_browser_title(&self, title: &str) -> Option<BrowserTab> {
         // Browser title format: "Page Title — Browser Name" or "Page Title - Browser Name"
-        let re = Regex::new(r"(.+?)\s*[—\-]\s*(Firefox|Google Chrome|Chromium|Microsoft Edge|Brave)").ok()?;
-        
+        let re =
+            Regex::new(r"(.+?)\s*[—\-]\s*(Firefox|Google Chrome|Chromium|Microsoft Edge|Brave)")
+                .ok()?;
+
         if let Some(captures) = re.captures(title) {
             let page_title = captures.get(1)?.as_str().trim().to_string();
             let browser = captures.get(2)?.as_str().to_string();
@@ -99,8 +101,10 @@ impl BrowserPlugin {
                     .args(["getwindowname", &wid])
                     .output()
                 {
-                    let title = String::from_utf8_lossy(&title_output.stdout).trim().to_string();
-                    
+                    let title = String::from_utf8_lossy(&title_output.stdout)
+                        .trim()
+                        .to_string();
+
                     if let Some(tab) = self.parse_browser_title(&title) {
                         tabs.push(tab);
                     }
@@ -129,7 +133,11 @@ impl Plugin for BrowserPlugin {
         Ok(())
     }
 
-    async fn on_context_request(&self, ctx: &PluginContext, key: &str) -> Option<serde_json::Value> {
+    async fn on_context_request(
+        &self,
+        _ctx: &PluginContext,
+        key: &str,
+    ) -> Option<serde_json::Value> {
         match key {
             "browser.tabs" => {
                 let tabs = self.get_browser_windows();

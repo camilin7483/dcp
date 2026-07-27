@@ -39,12 +39,12 @@ pub use tokio;
 pub use tracing;
 
 use anyhow::Result;
-use dcp_types::{Request, Response, RequestId, EventType};
-use std::path::PathBuf;
+use dcp_types::{EventType, Request, RequestId, Response};
 use futures::{SinkExt, StreamExt};
+use std::path::PathBuf;
 use tokio::net::UnixStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
-use tracing::{info, error};
+use tracing::{error, info};
 
 /// Plugin registration info sent to dcpd on connect.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -69,7 +69,11 @@ pub trait Plugin: Send + Sync + 'static {
     fn registration(&self) -> PluginRegistration;
 
     /// Called when dcpd requests context from this plugin.
-    async fn on_context_request(&self, ctx: &PluginContext, key: &str) -> Option<serde_json::Value> {
+    async fn on_context_request(
+        &self,
+        ctx: &PluginContext,
+        key: &str,
+    ) -> Option<serde_json::Value> {
         let _ = (ctx, key);
         None
     }
@@ -91,8 +95,7 @@ pub trait Plugin: Send + Sync + 'static {
     }
 
     /// Called when the plugin is shutting down.
-    async fn on_stop(&self, _ctx: &PluginContext) {
-    }
+    async fn on_stop(&self, _ctx: &PluginContext) {}
 }
 
 /// Run a plugin — connects to dcpd, registers, and processes requests.
@@ -166,40 +169,54 @@ async fn handle_request<P: Plugin>(
 
     match request.method.as_str() {
         "context.request" => {
-            let key = request.params.as_ref()
+            let key = request
+                .params
+                .as_ref()
                 .and_then(|p| p.get("key"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
             let result = plugin.on_context_request(ctx, key).await;
-            Some(Response::success(id, result.unwrap_or(serde_json::Value::Null)))
+            Some(Response::success(
+                id,
+                result.unwrap_or(serde_json::Value::Null),
+            ))
         }
         "automation.execute" => {
-            let command = request.params.as_ref()
+            let command = request
+                .params
+                .as_ref()
                 .and_then(|p| p.get("command"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
-            let args = request.params.as_ref()
+            let args = request
+                .params
+                .as_ref()
                 .and_then(|p| p.get("args"))
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
 
             let result = plugin.on_automation(ctx, command, args).await;
-            Some(Response::success(id, result.unwrap_or(serde_json::Value::Null)))
+            Some(Response::success(
+                id,
+                result.unwrap_or(serde_json::Value::Null),
+            ))
         }
-        "ping" => {
-            Some(Response::success(id, serde_json::json!({"pong": true})))
-        }
-        _ => {
-            Some(Response::error(id, dcp_types::ErrorCode::MethodNotFound, format!("Unknown method: {}", request.method)))
-        }
+        "ping" => Some(Response::success(id, serde_json::json!({"pong": true}))),
+        _ => Some(Response::error(
+            id,
+            dcp_types::ErrorCode::MethodNotFound,
+            format!("Unknown method: {}", request.method),
+        )),
     }
 }
 
 fn resolve_plugin_socket(plugin_id: &str) -> Result<PathBuf> {
     let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
-    Ok(PathBuf::from(format!("{runtime_dir}/dcpd/plugins/{plugin_id}.sock")))
+    Ok(PathBuf::from(format!(
+        "{runtime_dir}/dcpd/plugins/{plugin_id}.sock"
+    )))
 }
 
 /// Helper to emit an event from within a plugin.
@@ -208,11 +225,14 @@ pub async fn emit_event(
     event_type: EventType,
     data: serde_json::Value,
 ) -> Result<()> {
-    let notification = Request::notification("event", serde_json::json!({
-        "eventType": event_type,
-        "data": data,
-        "timestamp": chrono::Utc::now().timestamp_millis(),
-    }));
+    let notification = Request::notification(
+        "event",
+        serde_json::json!({
+            "eventType": event_type,
+            "data": data,
+            "timestamp": chrono::Utc::now().timestamp_millis(),
+        }),
+    );
     let bytes = serde_json::to_vec(&notification)?;
     framed.send(bytes.into()).await?;
     Ok(())

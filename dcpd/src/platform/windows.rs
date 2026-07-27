@@ -7,7 +7,6 @@ use async_trait::async_trait;
 use dcp_types::*;
 #[cfg(windows)]
 use tokio::process::Command;
-use tracing::warn;
 
 use super::PlatformBackend;
 
@@ -26,7 +25,8 @@ impl WindowsBackend {
 #[async_trait]
 impl PlatformBackend for WindowsBackend {
     async fn active_window(&self) -> Result<ActiveWindowInfo> {
-        #[cfg(windows)] {
+        #[cfg(windows)]
+        {
             // Use PowerShell to get active window info
             let script = r#"
 Add-Type @"
@@ -51,7 +51,8 @@ Write-Output "$pid|$($proc.ProcessName)|$title"
 "#;
             let output = Command::new("powershell")
                 .args(["-NoProfile", "-Command", script])
-                .output().await?;
+                .output()
+                .await?;
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let parts: Vec<&str> = stdout.splitn(3, '|').collect();
             let pid: u32 = parts.get(0).and_then(|p| p.parse().ok()).unwrap_or(0);
@@ -84,7 +85,8 @@ Write-Output "$pid|$($proc.ProcessName)|$title"
     }
 
     async fn running_processes(&self) -> Result<Vec<ProcessInfo>> {
-        #[cfg(windows)] {
+        #[cfg(windows)]
+        {
             let output = Command::new("powershell")
                 .args(["-NoProfile", "-Command", r#"
 Get-Process | Select-Object Id, ProcessName, CPU, WorkingSet64, StartTime, @{N='ParentId';E={(Get-WmiObject Win32_Process -Filter ('ProcessId='+$_.Id)).ParentProcessId}} | ConvertTo-Json -Compress
@@ -95,9 +97,20 @@ Get-Process | Select-Object Id, ProcessName, CPU, WorkingSet64, StartTime, @{N='
             if let Ok(list) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
                 for item in list {
                     let pid: u32 = item.get("Id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                    let name = item.get("ProcessName").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let mem_mb = item.get("WorkingSet64").and_then(|v| v.as_u64()).unwrap_or(0) / (1024*1024);
-                    let ppid: Option<u32> = item.get("ParentId").and_then(|v| v.as_u64()).map(|v| v as u32);
+                    let name = item
+                        .get("ProcessName")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let mem_mb = item
+                        .get("WorkingSet64")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0)
+                        / (1024 * 1024);
+                    let ppid: Option<u32> = item
+                        .get("ParentId")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as u32);
                     processes.push(ProcessInfo {
                         pid,
                         parent_pid: ppid,
@@ -119,10 +132,12 @@ Get-Process | Select-Object Id, ProcessName, CPU, WorkingSet64, StartTime, @{N='
     }
 
     async fn clipboard(&self) -> Result<ClipboardData> {
-        #[cfg(windows)] {
+        #[cfg(windows)]
+        {
             let output = Command::new("powershell")
                 .args(["-NoProfile", "-Command", r#"Get-Clipboard"#])
-                .output().await?;
+                .output()
+                .await?;
             let content = String::from_utf8_lossy(&output.stdout).trim().to_string();
             return Ok(ClipboardData {
                 content_type: ContentType::Text,
@@ -139,7 +154,8 @@ Get-Process | Select-Object Id, ProcessName, CPU, WorkingSet64, StartTime, @{N='
     }
 
     async fn mouse_position(&self) -> Result<MouseInfo> {
-        #[cfg(windows)] {
+        #[cfg(windows)]
+        {
             let script = r#"
 Add-Type @"
 using System;
@@ -155,19 +171,31 @@ Write-Output "$($pt.X)|$($pt.Y)"
 "#;
             let output = Command::new("powershell")
                 .args(["-NoProfile", "-Command", script])
-                .output().await?;
+                .output()
+                .await?;
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let parts: Vec<&str> = stdout.splitn(2, '|').collect();
             let x = parts.get(0).and_then(|v| v.parse().ok()).unwrap_or(0);
             let y = parts.get(1).and_then(|v| v.parse().ok()).unwrap_or(0);
-            return Ok(MouseInfo { x, y, display_id: None, semantic_context: None });
+            return Ok(MouseInfo {
+                x,
+                y,
+                display_id: None,
+                semantic_context: None,
+            });
         }
         #[cfg(not(windows))]
-        Ok(MouseInfo { x: 0, y: 0, display_id: None, semantic_context: None })
+        Ok(MouseInfo {
+            x: 0,
+            y: 0,
+            display_id: None,
+            semantic_context: None,
+        })
     }
 
     async fn monitors(&self) -> Result<Vec<MonitorInfo>> {
-        #[cfg(windows)] {
+        #[cfg(windows)]
+        {
             let output = Command::new("powershell")
                 .args(["-NoProfile", "-Command", r#"
 Add-Type -AssemblyName System.Windows.Forms
@@ -178,18 +206,28 @@ Add-Type -AssemblyName System.Windows.Forms
             let mut monitors = Vec::new();
             if let Ok(list) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
                 for (i, item) in list.iter().enumerate() {
-                    let bounds = item.get("Bounds").and_then(|b| {
-                        Some(Rect::new(
-                            b.get("X").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
-                            b.get("Y").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
-                            b.get("Width").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                            b.get("Height").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                        ))
-                    }).unwrap_or_default();
-                    let is_primary = item.get("Primary").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let bounds = item
+                        .get("Bounds")
+                        .and_then(|b| {
+                            Some(Rect::new(
+                                b.get("X").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                                b.get("Y").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                                b.get("Width").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                                b.get("Height").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                            ))
+                        })
+                        .unwrap_or_default();
+                    let is_primary = item
+                        .get("Primary")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
                     monitors.push(MonitorInfo {
                         id: i as u64,
-                        name: item.get("DeviceName").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        name: item
+                            .get("DeviceName")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
                         bounds,
                         work_area: bounds,
                         scale_factor: 1.0,
@@ -206,9 +244,13 @@ Add-Type -AssemblyName System.Windows.Forms
     }
 
     async fn system_resources(&self) -> Result<SystemResources> {
-        #[cfg(windows)] {
+        #[cfg(windows)]
+        {
             let output = Command::new("powershell")
-                .args(["-NoProfile", "-Command", r#"
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    r#"
 $cpu = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
 $os = Get-CimInstance Win32_OperatingSystem
 $total = [math]::Round($os.TotalVisibleMemorySize / 1024)
@@ -216,8 +258,10 @@ $free = [math]::Round($os.FreePhysicalMemory / 1024)
 $used = $total - $free
 $pct = if ($total -gt 0) { [math]::Round(($used / $total) * 100, 1) } else { 0 }
 Write-Output "$cpu|$total|$used|$pct"
-                "#])
-                .output().await?;
+                "#,
+                ])
+                .output()
+                .await?;
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let parts: Vec<&str> = stdout.splitn(4, '|').collect();
             let cpu = parts.get(0).and_then(|v| v.parse().ok()).unwrap_or(0.0);
@@ -251,7 +295,8 @@ Write-Output "$cpu|$total|$used|$pct"
     }
 
     async fn network_state(&self) -> Result<NetworkState> {
-        #[cfg(windows)] {
+        #[cfg(windows)]
+        {
             let output = Command::new("powershell")
                 .args(["-NoProfile", "-Command", r#"
 Get-NetAdapter | Where-Object Status -eq 'Up' | Select-Object Name, MacAddress, LinkSpeed | ConvertTo-Json -Compress
@@ -262,9 +307,16 @@ Get-NetAdapter | Where-Object Status -eq 'Up' | Select-Object Name, MacAddress, 
             if let Ok(list) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
                 for item in list {
                     interfaces.push(NetworkInterface {
-                        name: item.get("Name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        name: item
+                            .get("Name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
                         ip_addresses: vec![],
-                        mac_address: item.get("MacAddress").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                        mac_address: item
+                            .get("MacAddress")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
                         is_up: true,
                         bytes_sent: 0,
                         bytes_received: 0,
@@ -273,7 +325,11 @@ Get-NetAdapter | Where-Object Status -eq 'Up' | Select-Object Name, MacAddress, 
             }
             return Ok(NetworkState {
                 is_connected: !interfaces.is_empty(),
-                connectivity_type: if interfaces.is_empty() { ConnectivityType::None } else { ConnectivityType::Ethernet },
+                connectivity_type: if interfaces.is_empty() {
+                    ConnectivityType::None
+                } else {
+                    ConnectivityType::Ethernet
+                },
                 interfaces,
             });
         }
@@ -295,20 +351,33 @@ Get-NetAdapter | Where-Object Status -eq 'Up' | Select-Object Name, MacAddress, 
     }
 
     async fn power_state(&self) -> Result<PowerState> {
-        #[cfg(windows)] {
+        #[cfg(windows)]
+        {
             let output = Command::new("powershell")
-                .args(["-NoProfile", "-Command", r#"
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    r#"
 $status = (Get-CimInstance Win32_Battery).BatteryStatus
 $pct = (Get-CimInstance Win32_Battery).EstimatedChargeRemaining
 $charging = $status -eq 2 -or $status -eq 6
 Write-Output "$pct|$charging"
-                "#])
-                .output().await?;
+                "#,
+                ])
+                .output()
+                .await?;
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let parts: Vec<&str> = stdout.splitn(2, '|').collect();
             let pct = parts.get(0).and_then(|v| v.parse().ok());
-            let charging = parts.get(1).and_then(|v| v.trim().parse::<bool>().ok()).unwrap_or(false);
-            let source = if charging { PowerSource::Ac } else { PowerSource::Battery };
+            let charging = parts
+                .get(1)
+                .and_then(|v| v.trim().parse::<bool>().ok())
+                .unwrap_or(false);
+            let source = if charging {
+                PowerSource::Ac
+            } else {
+                PowerSource::Battery
+            };
             return Ok(PowerState {
                 source,
                 battery_percent: pct,
@@ -326,7 +395,11 @@ Write-Output "$pct|$charging"
     }
 
     async fn workspace(&self) -> Result<WorkspaceInfo> {
-        Ok(WorkspaceInfo { current: 0, total: 1, names: vec!["Desktop".to_string()] })
+        Ok(WorkspaceInfo {
+            current: 0,
+            total: 1,
+            names: vec!["Desktop".to_string()],
+        })
     }
 
     async fn notifications(&self) -> Result<Vec<NotificationInfo>> {
@@ -343,18 +416,28 @@ Write-Output "$pct|$charging"
     }
 
     async fn installed_apps(&self) -> Result<Vec<InstalledApp>> {
-        #[cfg(windows)] {
+        #[cfg(windows)]
+        {
             let output = Command::new("powershell")
-                .args(["-NoProfile", "-Command", r#"
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    r#"
 Get-StartApps | Select-Object Name, AppId | ConvertTo-Json -Compress
-                "#])
-                .output().await?;
+                "#,
+                ])
+                .output()
+                .await?;
             let stdout = String::from_utf8_lossy(&output.stdout);
             let mut apps = Vec::new();
             if let Ok(list) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
                 for item in list {
                     apps.push(InstalledApp {
-                        name: item.get("Name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        name: item
+                            .get("Name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
                         executable: None,
                         version: None,
                         category: None,
