@@ -1,307 +1,193 @@
-# DCP — Desktop Context Protocol
+<div align="center">
 
-## Overview
+# 🖥️ DCP — Desktop Context Protocol
 
-DCP is a high-performance, cross-platform desktop context protocol that enables AI agents to understand and interact with the user's desktop environment in real-time.
+**Expose your desktop environment to AI agents via JSON-RPC**
 
-**Current Status**: Phase 2 Complete (Prototype)  
-**Version**: 0.1.0  
-**License**: MIT OR Apache-2.0
+[![CI](https://github.com/camilin7483/dcp/actions/workflows/ci.yml/badge.svg)](https://github.com/camilin7483/dcp/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/dcpd)](https://crates.io/crates/dcpd)
+[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue)](#license)
+[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)](https://rustup.rs)
+
+[Installation](#installation) • [Quick Start](#quick-start) • [Documentation](docs/) • [SDKs](#sdks) • [Contributing](#contributing)
+
+---
+
+DCP is a **production-grade daemon** that exposes your desktop environment state — windows, clipboard, processes, audio, network, notifications, and more — over **JSON-RPC 2.0** via Unix sockets and TLS WebSocket. Built for AI agents, automation tools, and desktop-aware applications.
+
+**Linux · macOS · Windows**
+
+</div>
+
+## Features
+
+| Category | Capabilities |
+|----------|-------------|
+| 🪟 **Windows** | Active window, window tree, focus tracking, workspace info |
+| 📋 **Clipboard** | Read/write clipboard, content-type detection, selection tracking |
+| ⚙️ **Processes** | Running processes, CPU, memory, disk, load average |
+| 🖱️ **Input** | Mouse position, keyboard focus, selected text |
+| 🖥️ **Display** | Monitor info, resolution, scale, refresh rate |
+| 🌐 **Network** | Interfaces, connectivity status, traffic stats |
+| 🔊 **Audio** | Input/output devices, volume, mute state |
+| 🔋 **Power** | Battery percentage, charging status, power source |
+| 🔔 **Notifications** | System notification listener (D-Bus) |
+| 📸 **Vision** | Screen capture, OCR (Tesseract), element detection |
+| 🤖 **Automation** | Mouse control, keyboard input, clipboard write, app launch |
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    dcp CLI / SDKs                           │
-│         (query/subscribe/inspect/benchmark)                 │
-└──────────────────────────┬──────────────────────────────────┘
-                           │ Unix Socket
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│                      dcpd Daemon                            │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │              Core Modules                            │  │
-│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐            │  │
-│  │  │  Server  │ │  Events  │ │  Cache   │            │  │
-│  │  │ (RPC +   │ │   Bus    │ │  (TTL)   │            │  │
-│  │  │ Session) │ │(Batching)│ │          │            │  │
-│  │  └──────────┘ └──────────┘ └──────────┘            │  │
-│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐            │  │
-│  │  │Automaton │ │ Platform │ │   D-Bus  │            │  │
-│  │  │ Executor │ │  Backend │ │ Listener │            │  │
-│  │  └──────────┘ └──────────┘ └──────────┘            │  │
-│  └──────────────────────────────────────────────────────┘  │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-        ┌──────────────────┼──────────────────┐
-        ▼                  ▼                  ▼
-┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│    Linux     │  │   Windows    │  │    macOS     │
-│  (xdotool,   │  │  (Win32,     │  │  (AX APIs,   │
-│   /proc,     │  │   UIA,       │  │   NSWorkspace│
-│   grim,      │  │   COM)       │  │   CGWindow)  │
-│   zbus)      │  │              │  │              │
-└──────────────┘  └──────────────┘  └──────────────┘
+│                        AI Agent / App                        │
+├───────────────────────┬─────────────────────────────────────┤
+│    Rust SDK / CLI     │  Python SDK  │  TypeScript SDK      │
+├───────────────────────┴─────────────────────────────────────┤
+│                    JSON-RPC 2.0 (TCP/Unix)                    │
+├─────────────────────────────────────────────────────────────┤
+│                     dcpd (Rust Daemon)                        │
+│  ┌─────────┐ ┌──────────┐ ┌──────────┐ ┌────────────────┐  │
+│  │Session  │ │Permission│ │ Rate     │ │ Event Bus      │  │
+│  │Manager  │ │Manager   │ │ Limiter  │ │ Pub/Sub        │  │
+│  ├─────────┤ ├──────────┤ ├──────────┤ ├────────────────┤  │
+│  │ Plugin  │ │ Platform │ │ Vision   │ │ Automation     │  │
+│  │ Host    │ │ Backend  │ │ Module   │ │ Executor       │  │
+│  └─────────┘ └──────────┘ └──────────┘ └────────────────┘  │
+├─────────────────────────────────────────────────────────────┤
+│                   Linux · macOS · Windows                     │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## Features Implemented
+## Installation
 
-### Phase 1: Foundation
-- ✅ Core protocol types (JSON-RPC 2.0, MessagePack support)
-- ✅ Workspace structure (7 crates)
-- ✅ Platform backend trait + 3 OS stubs
-- ✅ Daemon skeleton with Unix socket server
-- ✅ Event bus with basic pub/sub
-- ✅ Permission system (HMAC-SHA256 tokens)
-- ✅ CLI tool (query/subscribe/status/session/inspect/benchmark)
-- ✅ Plugin SDK (trait-based, process isolation)
-- ✅ Python SDK (async client)
-- ✅ TypeScript SDK (Node.js client)
+### From source (recommended)
 
-### Phase 2: Core Functionality
-- ✅ Event batching with time windows and coalescing
-- ✅ Automation executor (Linux: xdotool, xclip, wl-copy)
-  - Mouse: move, click, double-click, drag, scroll
-  - Keyboard: type text, press keys, hotkeys
-  - Clipboard: set text (X11 + Wayland)
-  - Window management: focus, move, resize, minimize, maximize, close
-  - Applications: launch, open files
-- ✅ Enhanced Linux backend
-  - Active window with semantic context (source code, terminal, browser)
-  - Window tree (X11 via xdotool)
-  - Process list with memory/CPU from /proc
-  - Clipboard (X11: xclip, Wayland: wl-paste)
-  - Mouse position with screen info
-  - Monitors (X11: xrandr)
-  - System resources (CPU, memory, load average from /proc)
-  - Network state (from /sys/class/net)
-  - Audio devices (PulseAudio via pactl)
-  - Power state (battery from /sys/class/power_supply)
-  - Workspace detection (X11: xprop, tiling WMs)
-- ✅ D-Bus integration
-  - Notification listener (org.freedesktop.Notifications)
-- ✅ Vision capture
-  - Screen capture (X11: ImageMagick import, Wayland: grim)
-  - Window capture
-  - Region capture
-  - PNG dimension parsing
-
-## Project Structure
-
+```bash
+git clone https://github.com/camilin7483/dcp.git
+cd dcp
+cargo build --release
+cp target/release/dcpd ~/.local/bin/
+cp target/release/dcp ~/.local/bin/
 ```
-dcp/
-├── Cargo.toml                 # Workspace root
-├── dcp-types/                 # Protocol types (shared)
-├── dcpd/                      # Core daemon
-│   ├── src/
-│   │   ├── server/            # RPC dispatcher, session manager
-│   │   ├── events/            # Event bus with batching
-│   │   ├── automation/        # Mouse/keyboard/clipboard control
-│   │   ├── platform/          # OS-specific backends
-│   │   ├── dbus.rs            # D-Bus notification listener
-│   │   ├── vision/            # Screen capture
-│   │   ├── cache/             # TTL cache
-│   │   ├── permissions/       # Capability tokens
-│   │   ├── audit/             # Audit logging
-│   │   └── plugins/           # Plugin host
-├── dcp-cli/                   # CLI tool
-├── plugins/
-│   ├── dcp-plugin-sdk/        # Plugin development SDK
-│   └── example-plugin/        # Reference implementation
-├── sdk/
-│   ├── python/                # Python async client
-│   └── typescript/            # TypeScript client
-├── spec/                      # Protocol specification
-└── tests/                     # Integration tests + benchmarks
+
+### Systemd user service
+
+```bash
+cp scripts/dcpd.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now dcpd
 ```
+
+### Docker
+
+```bash
+docker build -t dcpd .
+docker run -d --name dcpd -v /tmp:/tmp dcpd
+```
+
+### Dependencies by platform
+
+| Platform | Required | Optional |
+|----------|----------|----------|
+| **Linux X11** | `xdotool`, `xclip`, `xrandr` | `import` (ImageMagick) for screenshots |
+| **Linux Wayland** | `wl-clipboard`, `grim` | `hyprctl` (Hyprland) |
+| **macOS** | `osascript` (built-in) | None |
+| **Windows** | PowerShell 5+ (built-in) | None |
 
 ## Quick Start
 
-### Build
 ```bash
-cd ~/Projects/dcp
-cargo build --workspace
+# Start the daemon
+dcpd --foreground &
+
+# Query desktop context
+dcp query activeWindow clipboard
+
+# Full desktop snapshot
+dcp inspect
+
+# Listen for window focus events
+dcp subscribe window.focus
+
+# Get daemon status
+dcp status
 ```
 
-### Run Daemon
-```bash
-./target/debug/dcpd --verbose
+### Python example
+
+```python
+import asyncio
+from dcp_client import DcpClient
+
+async def main():
+    async with DcpClient() as client:
+        ctx = await client.query("activeWindow", "runningProcesses")
+        print(f"Active: {ctx.active_window.title}")
+        print(f"Processes: {len(ctx.running_processes)}")
+
+asyncio.run(main())
 ```
 
-### Query Context
-```bash
-./target/debug/dcp query activeWindow clipboard processes
+### TypeScript example
+
+```typescript
+import { DcpClient } from 'dcp-client';
+
+const client = new DcpClient();
+await client.connect();
+const ctx = await client.query('activeWindow', 'clipboard');
+console.log(`Working on: ${ctx.activeWindow.title}`);
+await client.close();
 ```
 
-### Subscribe to Events
-```bash
-./target/debug/dcp subscribe window.focus clipboard
-```
+## Documentation
 
-### Inspect Full Context
-```bash
-./target/debug/dcp inspect
-```
+Comprehensive documentation is available in the [docs/](docs/) directory:
 
-### Benchmark
-```bash
-./target/debug/dcp benchmark context.get
-```
+| Document | Description |
+|----------|-------------|
+| [Getting Started](docs/getting-started.md) | Installation, configuration, first query |
+| [Architecture](docs/architecture.md) | System design, data flow, components |
+| [API Reference](docs/api-reference.md) | Complete RPC method reference |
+| [Security Model](docs/security.md) | Permissions, tokens, threat model |
+| [Plugin Development](docs/plugins.md) | Write DCP plugins in Rust |
+| [SDK Reference](docs/sdks.md) | Using DCP from Rust, Python, TypeScript |
+| [Multi-Platform](docs/multi-platform.md) | Platform-specific features and limitations |
+| [Daily Usage](docs/daily-usage.md) | Workflows, automation ideas, scripts |
+| [Deployment](docs/deployment.md) | Production deployment, systemd, Docker |
+| [Troubleshooting](docs/troubleshooting.md) | Common issues and solutions |
 
-## Protocol Examples
+## SDKs
 
-### Query Active Window
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "context.get",
-  "params": {
-    "selectors": ["activeWindow"]
-  }
-}
-```
+| Language | Status | Location |
+|----------|--------|----------|
+| **Rust** (`dcp-client`) | ✅ Production | `sdks/rust/dcp-client/` |
+| **Python** (`dcp-client`) | ✅ Production | `sdk/python/` |
+| **TypeScript** (`dcp-client`) | ✅ Beta | `sdk/typescript/` |
 
-Response:
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "activeWindow": {
-      "id": 12345,
-      "title": "main.rs — dcp",
-      "application": "Visual Studio Code",
-      "pid": 1234,
-      "bounds": {"x": 100, "y": 100, "width": 1200, "height": 800},
-      "isFocused": true,
-      "semanticContext": "Editing source code"
-    }
-  }
-}
-```
+## Security
 
-### Subscribe to Events
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "method": "events.subscribe",
-  "params": {
-    "events": ["window.focus", "clipboard.changed"],
-    "batch": true,
-    "batchIntervalMs": 100
-  }
-}
-```
+DCP implements a **capability-based security model**:
 
-Event notification:
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "event",
-  "params": {
-    "subscriptionId": "sub_abc123",
-    "eventType": "window.focus",
-    "data": {
-      "windowId": 67890,
-      "title": "Terminal",
-      "application": "Alacritty"
-    },
-    "timestamp": 1234567890
-  }
-}
-```
+- **HMAC-SHA256 tokens** sign sessions with device-specific secrets
+- **Fine-grained capabilities** control access to each data type and action
+- **Rate limiting** prevents abuse (100 requests per 10 seconds per session)
+- **Audit logging** records all RPC calls in JSONL format
+- **TLS 1.3** encryption for remote WebSocket connections
+- **Session expiry** with automatic cleanup
+- **Plugin sandboxing** with process isolation
 
-### Automation
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 3,
-  "method": "automation.execute",
-  "params": {
-    "command": "keyboard.type",
-    "args": {"text": "Hello, world!"}
-  }
-}
-```
+## Project Status
 
-### Vision Capture
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 4,
-  "method": "vision.capture",
-  "params": {
-    "target": {"Screen": {"monitorId": null}},
-    "format": "png",
-    "quality": 90
-  }
-}
-```
+✅ **v1.0.0 — Production Ready**
 
-## Platform Support
-
-| Feature | Linux (X11) | Linux (Wayland) | Windows | macOS |
-|---------|-------------|-----------------|---------|-------|
-| Active window | ✅ xdotool | ⚠️ stub | ⚠️ stub | ⚠️ stub |
-| Window tree | ✅ xdotool | ⚠️ stub | ⚠️ stub | ⚠️ stub |
-| Process list | ✅ /proc | ✅ /proc | ⚠️ stub | ⚠️ stub |
-| Clipboard | ✅ xclip | ✅ wl-paste | ⚠️ stub | ⚠️ stub |
-| Mouse position | ✅ xdotool | ✅ xdotool | ⚠️ stub | ⚠️ stub |
-| Monitors | ✅ xrandr | ⚠️ stub | ⚠️ stub | ⚠️ stub |
-| System resources | ✅ /proc | ✅ /proc | ⚠️ stub | ⚠️ stub |
-| Network state | ✅ /sys | ✅ /sys | ⚠️ stub | ⚠️ stub |
-| Audio devices | ✅ pactl | ✅ pactl | ⚠️ stub | ⚠️ stub |
-| Power state | ✅ /sys | ✅ /sys | ⚠️ stub | ⚠️ stub |
-| Workspace | ✅ xprop | ✅ env | ⚠️ stub | ⚠️ stub |
-| Notifications | ✅ D-Bus | ✅ D-Bus | ⚠️ stub | ⚠️ stub |
-| Automation | ✅ full | ✅ full | ⚠️ stub | ⚠️ stub |
-| Vision capture | ✅ import | ✅ grim | ⚠️ stub | ⚠️ stub |
-
-## Dependencies
-
-### Rust
-- `tokio` — Async runtime
-- `serde` + `serde_json` — Serialization
-- `zbus` — D-Bus integration (Linux)
-- `hmac` + `sha2` — Capability token signing
-- `uuid` — Session/subscription IDs
-- `clap` — CLI parsing
-- `async-trait` — Async trait support
-
-### External Tools (Linux)
-- `xdotool` — Window management, mouse/keyboard automation
-- `xclip` / `wl-paste` — Clipboard operations
-- `xrandr` — Monitor information
-- `import` (ImageMagick) — X11 screenshots
-- `grim` — Wayland screenshots
-- `pactl` — Audio device information
-
-## Statistics
-
-- **Total files**: 50
-- **Rust code**: ~4,946 lines
-- **Python SDK**: ~484 lines
-- **TypeScript SDK**: ~376 lines
-- **Total**: ~5,800 lines
-
-## Next Steps (Phase 3)
-
-- [ ] Wayland native protocols (wlr-foreign-toplevel, zwlr-screencopy)
-- [ ] Windows backend (Win32, UI Automation)
-- [ ] macOS backend (Accessibility APIs)
-- [ ] OCR integration (Tesseract)
-- [ ] UI element detection
-- [ ] File system watcher (inotify)
-- [ ] Terminal output capture
-- [ ] Browser integration plugins
-- [ ] WASM plugin sandbox
-- [ ] TLS WebSocket transport
-- [ ] More comprehensive tests
+The daemon is actively used in daily workflows. All core features are stable and tested.
 
 ## License
 
-SPDX-License-Identifier: `MIT OR Apache-2.0`
+This project is licensed under either of:
 
-See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE) for details.
+- MIT License ([LICENSE-MIT](LICENSE-MIT))
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+
+at your option.

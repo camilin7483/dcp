@@ -1,41 +1,92 @@
-# DCP API Reference
+# API Reference
 
-## Protocol
+## Transport
 
-DCP uses JSON-RPC 2.0 over Unix domain sockets (local) or TLS WebSockets (remote).
+DCP uses **JSON-RPC 2.0** over Unix sockets (default) or TLS WebSocket.
 
 ### Frame Format
 
-```
-Content-Length: <N>\r\n
-Content-Type: application/json\r\n
-\r\n
-<payload of N bytes>
-```
-
-### Connection
+All messages use a 4-byte big-endian length prefix:
 
 ```
-socket: $XDG_RUNTIME_DIR/dcpd.sock
+[4 bytes: content length (BE u32)][N bytes: JSON payload]
 ```
 
----
+### Request
 
-## Methods
-
-### `session.create`
-
-Create a new session with the daemon.
-
-**Request:**
 ```json
 {
     "jsonrpc": "2.0",
     "id": 1,
+    "method": "context.get",
+    "params": {
+        "selectors": ["activeWindow", "clipboard"]
+    }
+}
+```
+
+### Response (Success)
+
+```json
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+        "activeWindow": { ... },
+        "clipboard": { ... }
+    }
+}
+```
+
+### Response (Error)
+
+```json
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "error": {
+        "code": -32001,
+        "message": "Permission denied",
+        "data": null
+    }
+}
+```
+
+## Error Codes
+
+| Code | Name | Description |
+|------|------|-------------|
+| -32700 | ParseError | Invalid JSON |
+| -32600 | InvalidRequest | Request object is invalid |
+| -32601 | MethodNotFound | Unknown method |
+| -32602 | InvalidParams | Invalid method params |
+| -32603 | InternalError | Internal daemon error |
+| -32000 | SessionExpired | Session token expired |
+| -32001 | PermissionDenied | Missing capability |
+| -32002 | CapabilityRevoked | Capability was revoked |
+| -32003 | SelectorUnavailable | Context selector not available |
+| -32004 | EventNotSubscribed | Not subscribed to event type |
+| -32005 | PluginNotFound | Plugin not found |
+| -32006 | AutomationBlocked | Automation blocked by policy |
+| -32007 | VisionNotAvailable | Vision module not enabled |
+| -32008 | CaptureFailed | Screen capture failed |
+| -32009 | OcrFailed | OCR processing failed |
+| -32010 | DaemonShuttingDown | Daemon is shutting down |
+| -32011 | RateLimited | Too many requests |
+
+## Methods
+
+### session.create
+
+Create a new authenticated session.
+
+**Request:**
+```json
+{
     "method": "session.create",
     "params": {
-        "clientName": "my-agent",
-        "capabilities": ["dcp:context:windows:read", "dcp:events:window:subscribe"],
+        "clientName": "my-app",
+        "capabilities": ["dcp:context:windows:read", "dcp:context:clipboard:read"],
         "encoding": "json"
     }
 }
@@ -44,96 +95,108 @@ Create a new session with the daemon.
 **Response:**
 ```json
 {
-    "sessionId": "uuid",
-    "token": "dcp_v1.<session_id>.<perm_hash>.<signature>",
-    "expiresAt": 1234567890,
-    "grantedCapabilities": [...],
-    "deniedCapabilities": [...],
+    "sessionId": "uuid-v4",
+    "token": "dcp_v1.<session_id>.<perm_hash>.<expires_at>.<signature>",
+    "expiresAt": 1712345678,
+    "grantedCapabilities": ["dcp:context:windows:read"],
+    "deniedCapabilities": ["dcp:context:clipboard:read"],
     "requiresApproval": false
 }
 ```
 
----
+### session.close
 
-### `context.get`
-
-Query current desktop context.
+Close an existing session.
 
 **Request:**
 ```json
 {
-    "jsonrpc": "2.0",
-    "id": 2,
-    "method": "context.get",
-    "params": {
-        "selectors": ["activeWindow", "clipboard", "processes", "mouse"]
-    }
+    "method": "session.close",
+    "params": { "sessionId": "uuid-v4" }
 }
 ```
 
-**Selectors:**
-| Selector | Description |
-|----------|-------------|
-| `activeWindow` | Currently focused window |
-| `windowTree` | All open windows |
-| `activeApplication` | Application owning focused window |
-| `runningProcesses` | All running processes |
-| `clipboard` | Current clipboard content |
-| `mouse` | Mouse position + semantic context |
-| `keyboardFocus` | Current keyboard focus target |
-| `monitors` | Connected displays |
-| `systemResources` | CPU, memory, disk usage |
-| `network` | Network interfaces |
-| `audioDevices` | Audio input/output |
-| `notifications` | Active notifications |
-| `power` | Battery/power state |
-| `workspace` | Virtual desktop state |
-| `installedApps` | Installed applications |
-| `terminals` | Terminal sessions |
-| `browser` | Browser tabs/URLs (plugin) |
-| `openFiles` | Open files in editors |
-| `selectedText` | Current text selection |
+**Response:**
+```json
+{
+    "success": true
+}
+```
+
+### context.get
+
+Query desktop context with one or more selectors.
+
+**Request:**
+```json
+{
+    "method": "context.get",
+    "params": {
+        "selectors": ["activeWindow", "clipboard", "mouse"]
+    }
+}
+```
 
 **Response:**
 ```json
 {
     "activeWindow": {
         "id": 12345,
-        "title": "main.rs — dcp",
-        "application": "Visual Studio Code",
-        "pid": 1234,
-        "bounds": {"x": 100, "y": 100, "width": 1200, "height": 800},
+        "title": "My Document - Editor",
+        "application": "code",
+        "pid": 45678,
+        "bounds": { "x": 0, "y": 0, "width": 1920, "height": 1080 },
         "isFocused": true,
-        "semanticContext": "Editing Rust source file"
+        "semanticContext": "Editing code in VS Code"
     },
     "clipboard": {
         "contentType": "text",
-        "content": "fn main() {}",
-        "timestamp": 1234567890
+        "content": "copied text here",
+        "timestamp": 1712345678000
     },
     "mouse": {
-        "x": 1420,
-        "y": 801,
+        "x": 960,
+        "y": 540,
         "displayId": 0,
-        "semanticContext": "Hovering the 'Run' button"
+        "semanticContext": "Over the main editor panel"
     }
 }
 ```
 
----
+**Available Selectors:**
 
-### `events.subscribe`
+| Selector | Returns | Capability Required |
+|----------|---------|---------------------|
+| `activeWindow` | ActiveWindowInfo | dcp:context:windows:read |
+| `windowTree` | [WindowInfo] | dcp:context:windows:read |
+| `activeApplication` | ApplicationInfo | dcp:context:windows:read |
+| `runningProcesses` | [ProcessInfo] | dcp:context:processes:read |
+| `clipboard` | ClipboardData | dcp:context:clipboard:read |
+| `mouse` | MouseInfo | dcp:context:mouse:read |
+| `keyboardFocus` | FocusInfo | dcp:context:keyboardFocus:read |
+| `monitors` | [MonitorInfo] | dcp:context:monitors:read |
+| `systemResources` | SystemResources | dcp:context:systemResources:read |
+| `network` | NetworkState | dcp:context:network:read |
+| `audioDevices` | AudioDevicesInfo | dcp:context:audio:read |
+| `power` | PowerState | dcp:context:power:read |
+| `workspace` | WorkspaceInfo | dcp:context:workspace:read |
+| `notifications` | [NotificationInfo] | dcp:context:notifications:read |
+| `installedApps` | [InstalledApp] | dcp:context:installedApps:read |
+| `selectedText` | string | dcp:context:selectedText:read |
+| `terminals` | [TerminalSession] | dcp:context:terminals:read |
+| `browser` | BrowserState | dcp:context:browser:read |
+| `openFiles` | [OpenFile] | dcp:context:openFiles:read |
 
-Subscribe to real-time events.
+### events.subscribe
+
+Subscribe to desktop events.
 
 **Request:**
 ```json
 {
-    "jsonrpc": "2.0",
-    "id": 3,
     "method": "events.subscribe",
     "params": {
-        "events": ["window.focus", "clipboard", "terminal.output"],
+        "events": ["window.focus", "clipboard", "notification"],
         "batch": true,
         "batchIntervalMs": 100
     }
@@ -143,120 +206,124 @@ Subscribe to real-time events.
 **Response:**
 ```json
 {
-    "subscriptionId": "sub_abc123"
+    "subscriptionId": "sub-uuid"
 }
 ```
 
 **Event Types:**
 
-| Category | Events |
-|----------|--------|
-| Window | `window.focus`, `window.opened`, `window.closed`, `window.moved`, `window.resized`, `window.title`, `window.minimized`, `window.restored` |
-| Application | `app.launched`, `app.terminated`, `app.activated` |
-| Clipboard | `clipboard`, `selection` |
-| File | `file.changed`, `file.created`, `file.deleted`, `file.renamed` |
-| Terminal | `terminal.exec`, `terminal.output`, `terminal.cwd` |
-| Browser | `browser.tab`, `browser.url`, `browser.opened`, `browser.closed` |
-| Notification | `notification`, `notification.action` |
-| Display | `monitor.connected`, `monitor.disconnected`, `workspace.switch` |
-| Audio | `audio.device.added`, `audio.device.removed`, `audio.default` |
-| Network | `network.changed`, `network.interface` |
-| System | `power.state`, `system.sleep`, `system.wake`, `screen.locked`, `screen.unlocked` |
-| Plugin | `plugin.registered`, `plugin.unregistered` |
+| Event | Triggered When | Data |
+|-------|---------------|------|
+| `window.focus` | Window focus changes | WindowEventData |
+| `window.opened` | New window created | WindowEventData |
+| `window.closed` | Window destroyed | WindowEventData |
+| `window.moved` | Window position changes | WindowEventData |
+| `window.resized` | Window size changes | WindowEventData |
+| `window.title` | Window title changes | WindowEventData |
+| `window.minimized` | Window minimized | WindowEventData |
+| `window.restored` | Window restored | WindowEventData |
+| `app.launched` | Application starts | AppEventData |
+| `app.terminated` | Application exits | AppEventData |
+| `app.activated` | Application activated | AppEventData |
+| `clipboard` | Clipboard content changes | ClipboardEventData |
+| `selection` | Text selection changes | SelectionEventData |
+| `file.changed` | Watched file changes | FileEventData |
+| `file.created` | New file in watched dir | FileEventData |
+| `file.deleted` | File deleted in watched dir | FileEventData |
+| `file.renamed` | File renamed in watched dir | FileEventData |
+| `terminal.exec` | Terminal command executed | TerminalEventData |
+| `terminal.output` | Terminal output received | TerminalEventData |
+| `terminal.cwd` | Terminal cwd changed | TerminalEventData |
+| `browser.tab` | Browser tab activated | BrowserEventData |
+| `browser.url` | Browser URL changed | BrowserEventData |
+| `browser.opened` | Browser window opened | BrowserEventData |
+| `browser.closed` | Browser window closed | BrowserEventData |
+| `notification` | System notification received | NotificationEventData |
+| `notification.action` | Notification action triggered | NotificationActionEventData |
+| `monitor.connected` | Display connected | MonitorEventData |
+| `monitor.disconnected` | Display disconnected | MonitorEventData |
+| `workspace.switch` | Virtual desktop switched | WorkspaceEventData |
+| `audio.device.added` | Audio device connected | AudioEventData |
+| `audio.device.removed` | Audio device removed | AudioEventData |
+| `audio.default` | Default audio device changed | AudioEventData |
+| `network.changed` | Network connectivity changes | NetworkEventData |
+| `network.interface` | Network interface changes | NetworkInterfaceEventData |
+| `power.state` | Power state changes | PowerEventData |
+| `system.sleep` | System going to sleep | SystemEventData |
+| `system.wake` | System woke up | SystemEventData |
+| `screen.locked` | Screen locked | SystemEventData |
+| `screen.unlocked` | Screen unlocked | SystemEventData |
+| `plugin.registered` | Plugin registered | PluginEventData |
+| `plugin.unregistered` | Plugin unregistered | PluginEventData |
 
-**Event Notification:**
-```json
-{
-    "jsonrpc": "2.0",
-    "method": "event",
-    "params": {
-        "subscriptionId": "sub_abc123",
-        "eventType": "window.focus",
-        "data": {
-            "windowId": 67890,
-            "title": "Terminal",
-            "application": "Alacritty",
-            "pid": 5678
-        },
-        "timestamp": 1234567890
-    }
-}
-```
+### automation.execute
 
----
-
-### `automation.execute`
-
-Execute an automation command.
+Execute automation commands.
 
 **Request:**
 ```json
 {
-    "jsonrpc": "2.0",
-    "id": 4,
     "method": "automation.execute",
     "params": {
-        "command": "mouse.move",
-        "args": {"x": 100, "y": 200},
+        "command": {
+            "type": "MouseClick",
+            "x": 100,
+            "y": 200,
+            "button": "left"
+        },
         "dryRun": false
     }
 }
 ```
 
-**Commands:**
-| Command | Args |
-|---------|------|
-| `mouse.move` | `x`, `y` |
-| `mouse.click` | `x`, `y`, `button` (left/right/middle) |
-| `mouse.doubleClick` | `x`, `y` |
-| `mouse.drag` | `fromX`, `fromY`, `toX`, `toY` |
-| `mouse.scroll` | `x`, `y`, `deltaX`, `deltaY` |
-| `keyboard.type` | `text` |
-| `keyboard.key` | `key`, `modifiers` |
-| `keyboard.hotkey` | `keys` |
-| `clipboard.set` | `content`, `contentType` |
-| `app.launch` | `executable`, `args`, `workingDir` |
-| `window.focus` | `windowId` |
-| `window.move` | `windowId`, `x`, `y` |
-| `window.resize` | `windowId`, `width`, `height` |
-| `window.minimize` | `windowId` |
-| `window.maximize` | `windowId` |
-| `window.restore` | `windowId` |
-| `window.close` | `windowId` |
-| `file.open` | `path` |
-
 **Response:**
 ```json
 {
     "success": true,
-    "message": "mouse moved"
+    "message": "clicked at (100, 200)"
 }
 ```
 
----
+**Command Types:**
 
-### `vision.capture`
+| Command | Params | Capability |
+|---------|--------|------------|
+| MouseMove | x, y | automation:mouse:write |
+| MouseClick | x, y, button | automation:mouse:write |
+| MouseDoubleClick | x, y | automation:mouse:write |
+| MouseDrag | from_x, from_y, to_x, to_y | automation:mouse:write |
+| MouseScroll | x, y, delta_x, delta_y | automation:mouse:write |
+| KeyboardType | text | automation:keyboard:write |
+| KeyboardKey | key, modifiers | automation:keyboard:write |
+| KeyboardHotkey | keys | automation:keyboard:write |
+| ClipboardSet | content, content_type | automation:clipboard:write |
+| AppLaunch | executable, args, working_dir | automation:appLaunch:write |
+| WindowFocus | window_id | automation:windowManagement:write |
+| WindowMove | window_id, x, y | automation:windowManagement:write |
+| WindowResize | window_id, width, height | automation:windowManagement:write |
+| WindowMinimize | window_id | automation:windowManagement:write |
+| WindowMaximize | window_id | automation:windowManagement:write |
+| WindowRestore | window_id | automation:windowManagement:write |
+| WindowClose | window_id | automation:windowManagement:write |
+| FileOpen | path | automation:filesystem:write |
 
-Capture screen/window/region as image.
+### vision.capture
+
+Capture screen content.
 
 **Request:**
 ```json
 {
-    "jsonrpc": "2.0",
-    "id": 5,
     "method": "vision.capture",
     "params": {
-        "target": {"Screen": {"monitorId": null}},
-        "format": "png",
-        "quality": 90
+        "target": {
+            "type": "Screen",
+            "monitorId": null
+        },
+        "format": "png"
     }
 }
 ```
-
-**Target Types:**
-- `Screen` — full screen or specific monitor
-- `Window` — specific window by ID
-- `Region` — rectangular region with bounds
 
 **Response:**
 ```json
@@ -264,27 +331,31 @@ Capture screen/window/region as image.
     "width": 1920,
     "height": 1080,
     "format": "png",
-    "dataBase64": "iVBORw0KGgoAAAANS...",
-    "timestamp": 1234567890
+    "dataBase64": "iVBORw0KGgo...",
+    "timestamp": 1712345678000
 }
 ```
 
----
+**Target Types:**
 
-### `vision.ocr`
+| Target | Params | Description |
+|--------|--------|-------------|
+| Screen | monitor_id (optional) | Full screen or specific monitor |
+| Window | window_id | Specific window contents |
+| Region | bounds (x, y, width, height) | Screen region |
 
-Perform OCR on an image.
+### vision.ocr
+
+Perform OCR on a previously captured image.
 
 **Request:**
 ```json
 {
-    "jsonrpc": "2.0",
-    "id": 6,
     "method": "vision.ocr",
     "params": {
-        "imageBase64": "iVBORw0KGgoAAAANS...",
-        "region": {"x": 100, "y": 200, "width": 400, "height": 300},
-        "language": "eng"
+        "imageBase64": "iVBORw0KGgo...",
+        "language": "eng",
+        "region": { "x": 0, "y": 0, "width": 100, "height": 50 }
     }
 }
 ```
@@ -292,34 +363,25 @@ Perform OCR on an image.
 **Response:**
 ```json
 {
-    "text": "Hello, world!",
+    "text": "Hello World",
     "confidence": 0.95,
     "textBoxes": [
         {
-            "bounds": {"x": 100, "y": 200, "width": 150, "height": 30},
-            "text": "Hello,",
-            "confidence": 0.97
-        },
-        {
-            "bounds": {"x": 260, "y": 200, "width": 100, "height": 30},
-            "text": "world!",
-            "confidence": 0.93
+            "bounds": { "x": 10, "y": 5, "width": 80, "height": 20 },
+            "text": "Hello",
+            "confidence": 0.95
         }
     ]
 }
 ```
 
----
+### daemon.status
 
-### `daemon.status`
-
-Get daemon status.
+Get daemon status and statistics.
 
 **Request:**
 ```json
 {
-    "jsonrpc": "2.0",
-    "id": 7,
     "method": "daemon.status",
     "params": {}
 }
@@ -328,70 +390,140 @@ Get daemon status.
 **Response:**
 ```json
 {
-    "version": "0.1.0",
+    "version": "1.0.0",
     "platform": "Linux",
+    "uptimeSeconds": 123456,
     "activeSessions": 3,
-    "uptimeSeconds": 3600
+    "activePlugins": 2,
+    "rateLimitedClients": 0
 }
 ```
 
----
+### daemon.health
 
-## Permissions
+Health check endpoint.
 
-### Capability Hierarchy
-
-```
-dcp:context:windows:read
-dcp:context:clipboard:read
-dcp:context:filesystem:read
-dcp:context:processes:read
-dcp:context:audio:read
-dcp:context:network:read
-dcp:context:power:read
-dcp:context:monitors:read
-dcp:context:notifications:read
-dcp:context:workspace:read
-dcp:context:installedApps:read
-dcp:context:terminals:read
-dcp:context:browser:read
-dcp:context:openFiles:read
-dcp:context:selectedText:read
-dcp:context:mouse:read
-dcp:context:keyboardFocus:read
-dcp:context:systemResources:read
-
-dcp:automation:mouse:write
-dcp:automation:keyboard:write
-dcp:automation:clipboard:write
-dcp:automation:filesystem:write
-dcp:automation:appLaunch:write
-dcp:automation:windowManagement:write
-
-dcp:events:window:subscribe
-dcp:events:clipboard:subscribe
-dcp:events:file:subscribe
-dcp:events:terminal:subscribe
-dcp:events:browser:subscribe
-dcp:events:notification:subscribe
-dcp:events:monitor:subscribe
-dcp:events:audio:subscribe
-dcp:events:network:subscribe
-dcp:events:system:subscribe
-dcp:events:plugin:subscribe
-
-dcp:vision:screen:capture
-dcp:vision:window:capture
-dcp:vision:ocr:execute
-dcp:vision:elementDetection
-
-dcp:admin:session:approve
-dcp:admin:plugin:install
-dcp:admin:plugin:configure
-dcp:admin:audit:read
+**Request:**
+```json
+{
+    "method": "daemon.health",
+    "params": {}
+}
 ```
 
----
+**Response:**
+```json
+{
+    "status": "ok",
+    "version": "1.0.0",
+    "uptimeSeconds": 123456,
+    "activeSessions": 3
+}
+```
+
+### daemon.metrics
+
+Get Prometheus-style metrics.
+
+**Request:**
+```json
+{
+    "method": "daemon.metrics",
+    "params": {}
+}
+```
+
+**Response:**
+```json
+{
+    "uptimeSeconds": 123456,
+    "counters": {
+        "rpc_calls_total": 15234
+    },
+    "gauges": {
+        "active_sessions": 3
+    },
+    "histograms": {
+        "rpc_duration_seconds": {
+            "buckets": [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0],
+            "counts": [1234, 4567, 7890, 12345, 15000, 15200, 15230, 15234],
+            "total": 15234,
+            "sum": 45.67,
+            "avg": 0.003
+        }
+    }
+}
+```
+
+## Capabilities Reference
+
+### Context Read
+
+| Capability String | Permission |
+|-------------------|------------|
+| dcp:context:windows:read | Read window info and titles |
+| dcp:context:clipboard:read | Read clipboard contents |
+| dcp:context:processes:read | List running processes |
+| dcp:context:filesystem:read | Read file system state |
+| dcp:context:audio:read | List audio devices |
+| dcp:context:network:read | Read network state |
+| dcp:context:power:read | Read battery status |
+| dcp:context:monitors:read | Read display info |
+| dcp:context:notifications:read | Read notification history |
+| dcp:context:workspace:read | Read workspace info |
+| dcp:context:mouse:read | Read mouse position |
+| dcp:context:keyboardFocus:read | Read keyboard focus |
+| dcp:context:systemResources:read | Read CPU/memory/disk |
+| dcp:context:installedApps:read | List installed applications |
+| dcp:context:selectedText:read | Read selected text |
+| dcp:context:terminals:read | Read terminal sessions |
+| dcp:context:browser:read | Read browser tabs/URLs |
+| dcp:context:openFiles:read | Read open files in editors |
+
+### Automation Write
+
+| Capability String | Permission |
+|-------------------|------------|
+| dcp:automation:mouse:write | Move/click/drag mouse |
+| dcp:automation:keyboard:write | Type text, press keys |
+| dcp:automation:clipboard:write | Set clipboard content |
+| dcp:automation:filesystem:write | Open files/launch apps |
+| dcp:automation:appLaunch:write | Launch applications |
+| dcp:automation:windowManagement:write | Focus/move/resize windows |
+
+### Event Subscribe
+
+| Capability String | Permission |
+|-------------------|------------|
+| dcp:events:window:subscribe | Window focus/open/close |
+| dcp:events:clipboard:subscribe | Clipboard changes |
+| dcp:events:file:subscribe | File system changes |
+| dcp:events:terminal:subscribe | Terminal command/output |
+| dcp:events:browser:subscribe | Browser tab/URL changes |
+| dcp:events:notification:subscribe | System notifications |
+| dcp:events:monitor:subscribe | Display connect/disconnect |
+| dcp:events:audio:subscribe | Audio device changes |
+| dcp:events:network:subscribe | Network connectivity |
+| dcp:events:system:subscribe | Power/sleep/wake events |
+| dcp:events:plugin:subscribe | Plugin lifecycle events |
+
+### Vision
+
+| Capability String | Permission |
+|-------------------|------------|
+| dcp:vision:screen:capture | Capture screen/window |
+| dcp:vision:window:capture | Capture specific window |
+| dcp:vision:ocr:execute | Perform OCR |
+| dcp:vision:elementDetection | Detect UI elements |
+
+### Admin
+
+| Capability String | Permission |
+|-------------------|------------|
+| dcp:admin:session:approve | Approve session requests |
+| dcp:admin:plugin:install | Install plugins |
+| dcp:admin:plugin:configure | Configure plugins |
+| dcp:admin:audit:read | Read audit logs |
 
 ## CLI Usage
 
@@ -415,7 +547,7 @@ dcp session create --name my-agent
 dcp session list
 
 # Benchmark
-dcp benchmark 100
+dcp benchmark context.get
 
 # Output formats
 dcp --format json query activeWindow
@@ -423,30 +555,28 @@ dcp --format pretty query activeWindow
 dcp --format table query activeWindow
 ```
 
----
-
 ## Python SDK
 
 ```python
 from dcp_client import DcpClient
 
 async with DcpClient() as client:
-    # Query context
     snapshot = await client.query("activeWindow", "clipboard")
     print(snapshot.active_window.title)
     print(snapshot.clipboard.content)
-
-    # Subscribe to events
-    def on_event(event):
-        print(f"Event: {event}")
 
     sub_id = await client.subscribe(["window.focus", "clipboard"], on_event)
 
     # Full inspect
     full = await client.inspect()
-```
 
----
+    # Automation
+    await client.execute("MouseClick", {"x": 100, "y": 200, "button": "left"})
+
+    # Vision
+    capture = await client.capture_screen()
+    ocr_result = await client.ocr(capture.image_base64)
+```
 
 ## TypeScript SDK
 
@@ -456,19 +586,16 @@ import { DcpClient } from "dcp-client";
 const client = new DcpClient();
 await client.connect();
 
-// Query context
 const snapshot = await client.query("activeWindow", "clipboard");
 console.log(snapshot.activeWindow?.title);
 
-// Subscribe to events
-const subId = await client.subscribe(["window.focus", "clipboard"], (event) => {
-    console.log("Event:", event);
-});
+const subId = await client.subscribe(
+  ["window.focus", "clipboard"],
+  (event) => console.log("Event:", event)
+);
 
 await client.close();
 ```
-
----
 
 ## Plugin Development
 
@@ -510,7 +637,11 @@ impl Plugin for MyPlugin {
         }
     }
 
-    async fn on_context_request(&self, ctx: &PluginContext, key: &str) -> Option<serde_json::Value> {
+    async fn on_context_request(
+        &self,
+        ctx: &PluginContext,
+        key: &str,
+    ) -> Option<serde_json::Value> {
         match key {
             "myPlugin.data" => Some(serde_json::json!({"hello": "world"})),
             _ => None,
