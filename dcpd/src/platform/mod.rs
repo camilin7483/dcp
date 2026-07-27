@@ -68,4 +68,8 @@ pub trait PlatformBackend: Send + Sync {
     async fn power_state(&self) -> Result<PowerState>;
     async fn workspace(&self) -> Result<WorkspaceInfo>;
     async fn notifications(&self) -> Result<Vec<NotificationInfo>>;
+
+    async fn keyboard_focus(&self) -> Result<FocusInfo>;
+    async fn installed_apps(&self) -> Result<Vec<InstalledApp>>;
+    async fn selected_text(&self) -> Result<Option<String>>;
 }

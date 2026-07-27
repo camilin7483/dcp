@@ -15,6 +15,7 @@ use crate::cache::ContextCache;
 use crate::permissions::PermissionManager;
 use crate::audit::AuditLogger;
 use crate::automation::AutomationBackend;
+use crate::ratelimit;
 
 pub mod session;
 pub use session::Session;
@@ -93,6 +94,17 @@ impl SessionManager {
     pub async fn active_sessions(&self) -> Vec<Session> {
         self.sessions.read().await.values().cloned().collect()
     }
+
+    pub async fn cleanup_expired(&self) {
+        let mut sessions = self.sessions.write().await;
+        let now = chrono::Utc::now().timestamp();
+        let before = sessions.len();
+        sessions.retain(|_, s| s.expires_at > now);
+        let after = sessions.len();
+        if before != after {
+            tracing::info!("Cleaned up {} expired sessions", before - after);
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +130,7 @@ pub struct Dispatcher<B: PlatformBackend + ?Sized> {
     perm_manager: PermissionManager,
     audit_logger: AuditLogger,
     pub session_manager: SessionManager,
+    rate_limiter: ratelimit::RateLimiter,
 }
 
 impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
@@ -130,6 +143,7 @@ impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
         audit_logger: AuditLogger,
         session_manager: SessionManager,
         automation: Option<Arc<dyn AutomationBackend>>,
+        rate_limiter: ratelimit::RateLimiter,
     ) -> Arc<Self> {
         Arc::new(Self {
             backend,
@@ -139,6 +153,7 @@ impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
             perm_manager,
             audit_logger,
             session_manager,
+            rate_limiter,
         })
     }
 
@@ -182,6 +197,23 @@ impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
         request: &Request,
         session: Option<&Session>,
     ) -> (Option<Response>, Option<Session>) {
+        let client_key = session.map(|s| s.id.as_str()).unwrap_or("anonymous");
+        if !self.rate_limiter.allow(client_key).await {
+            self.audit_logger.log_denied(
+                client_key,
+                Some(&request.method),
+                "rate limited",
+            );
+            return (
+                Some(Response::error(
+                    request.id.clone().unwrap_or(RequestId::Integer(0)),
+                    ErrorCode::RateLimited,
+                    "too many requests — slow down",
+                )),
+                None,
+            );
+        }
+
         let id = request.id.clone().unwrap_or(RequestId::Integer(0));
 
         if request.method == "session.create" {
@@ -193,6 +225,8 @@ impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
             return (None, None);
         }
 
+        let session_id = session.map(|s| s.id.as_str()).unwrap_or("unknown");
+        let start = std::time::Instant::now();
         let result = match request.method.as_str() {
             "session.close" => self.handle_session_close(session).await,
             "context.get" => self.handle_context_get(request, session).await,
@@ -202,7 +236,6 @@ impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
             "vision.ocr" => self.handle_vision_ocr(request, session).await,
             "daemon.status" => self.handle_daemon_status().await,
             _ => {
-                let session_id = session.map(|s| s.id.as_str()).unwrap_or("unknown");
                 self.audit_logger.log_denied(
                     session_id,
                     Some(&request.method),
@@ -218,11 +251,18 @@ impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
                 );
             }
         };
+        let duration = start.elapsed().as_millis() as u64;
+        self.audit_logger.log_rpc(
+            session_id,
+            &request.method,
+            request.params.as_ref().unwrap_or(&serde_json::Value::Null),
+            &result,
+            duration,
+        );
 
         match result {
             Ok(value) => (Some(Response::success(id, value)), None),
             Err(e) => {
-                let session_id = session.map(|s| s.id.as_str()).unwrap_or("unknown");
                 if let Some(pe) = e.downcast_ref::<PermissionError>() {
                     self.audit_logger
                         .log_denied(session_id, Some(&request.method), &pe.message);
@@ -382,6 +422,30 @@ impl<B: PlatformBackend + ?Sized> Dispatcher<B> {
                 dcp_types::ContextSelector::Notifications => {
                     if let Ok(notifs) = backend.notifications().await {
                         snapshot.notifications = Some(notifs);
+                    }
+                }
+                dcp_types::ContextSelector::KeyboardFocus => {
+                    if let Ok(info) = backend.keyboard_focus().await {
+                        snapshot.keyboard_focus = Some(info);
+                    }
+                }
+                dcp_types::ContextSelector::InstalledApps => {
+                    if let Ok(apps) = backend.installed_apps().await {
+                        snapshot.installed_apps = Some(apps);
+                    }
+                }
+                dcp_types::ContextSelector::Terminals => {
+                    // TODO: implement terminal detection
+                }
+                dcp_types::ContextSelector::Browser => {
+                    // TODO: implement browser tab/URL detection
+                }
+                dcp_types::ContextSelector::OpenFiles => {
+                    // TODO: implement open file detection
+                }
+                dcp_types::ContextSelector::SelectedText => {
+                    if let Ok(text) = backend.selected_text().await {
+                        snapshot.selected_text = text;
                     }
                 }
                 _ => {}

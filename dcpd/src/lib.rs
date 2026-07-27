@@ -7,6 +7,7 @@ pub mod config;
 pub mod dbus;
 pub mod events;
 pub mod permissions;
+pub mod ratelimit;
 pub mod platform;
 pub mod plugins;
 pub mod server;
@@ -140,13 +141,39 @@ pub async fn run(args: DaemonArgs) -> Result<()> {
     }
 
     // Set up graceful shutdown
+    use tokio::signal::unix::{signal, SignalKind};
+
     let shutdown = Arc::new(tokio::sync::Notify::new());
     let shutdown_clone = shutdown.clone();
-    tokio::spawn(async move {
-        let _ = tokio::signal::ctrl_c().await;
-        info!("Shutdown signal received");
-        shutdown_clone.notify_waiters();
-    });
+
+    let sigint = {
+        let s = shutdown.clone();
+        tokio::spawn(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            tracing::info!("SIGINT received");
+            s.notify_waiters();
+        })
+    };
+
+    let sigterm = {
+        let s = shutdown.clone();
+        tokio::spawn(async move {
+            let mut stream = signal(SignalKind::terminate()).expect("failed to create SIGTERM handler");
+            stream.recv().await;
+            tracing::info!("SIGTERM received");
+            s.notify_waiters();
+        })
+    };
+
+    let sigquit = {
+        let s = shutdown.clone();
+        tokio::spawn(async move {
+            let mut stream = signal(SignalKind::quit()).expect("failed to create SIGQUIT handler");
+            stream.recv().await;
+            tracing::info!("SIGQUIT received");
+            s.notify_waiters();
+        })
+    };
 
     let backend = platform::create_backend().await?;
     let automation = platform::create_automation();
@@ -154,6 +181,7 @@ pub async fn run(args: DaemonArgs) -> Result<()> {
     let cache = cache::ContextCache::new();
     let audit_logger = audit::AuditLogger::new(args.audit_directory());
     let perm_manager = permissions::PermissionManager::new();
+    let rate_limiter = ratelimit::RateLimiter::default();
     let plugin_host = Arc::new(plugins::PluginHost::new(args.plugin_directory(), event_bus.clone()));
     let session_manager = server::SessionManager::new(perm_manager.clone());
     let dispatcher = server::Dispatcher::new(
@@ -164,6 +192,7 @@ pub async fn run(args: DaemonArgs) -> Result<()> {
         audit_logger,
         session_manager,
         automation,
+        rate_limiter.clone(),
     );
 
     // Auto-discover and start plugins
@@ -179,6 +208,26 @@ pub async fn run(args: DaemonArgs) -> Result<()> {
     let plugin_health = plugin_host.clone();
     tokio::spawn(async move {
         plugin_health.run_health_loop().await;
+    });
+
+    // Periodic stale cleanup for rate limiter
+    let rate_cleanup = rate_limiter.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+        loop {
+            interval.tick().await;
+            rate_cleanup.cleanup_stale(std::time::Duration::from_secs(3600)).await;
+        }
+    });
+
+    // Session cleanup every 2 minutes
+    let session_cleanup = dispatcher.session_manager.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(120));
+        loop {
+            interval.tick().await;
+            session_cleanup.cleanup_expired().await;
+        }
     });
 
     // Start Linux-specific services
@@ -246,8 +295,11 @@ pub async fn run(args: DaemonArgs) -> Result<()> {
             }
         }
         _ = shutdown.notified() => {
-            info!("Graceful shutdown initiated");
+            tracing::info!("Graceful shutdown initiated");
+            // Stop accepting new connections, wait up to 5s
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             plugin_host.stop_all().await;
+            tracing::info!("Shutdown complete");
         }
     }
 

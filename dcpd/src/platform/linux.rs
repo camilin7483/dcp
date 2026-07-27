@@ -959,4 +959,66 @@ impl PlatformBackend for LinuxBackend {
     async fn notifications(&self) -> Result<Vec<NotificationInfo>> {
         Ok(vec![])
     }
+
+    async fn keyboard_focus(&self) -> Result<FocusInfo> {
+        let output = tokio::process::Command::new("xdotool")
+            .args(["getactivewindow", "getwindowname"])
+            .output().await?;
+        let title = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok(FocusInfo {
+            element_type: "window".to_string(),
+            description: if title.is_empty() { None } else { Some(title) },
+            window_id: None,
+        })
+    }
+
+    async fn installed_apps(&self) -> Result<Vec<InstalledApp>> {
+        let apps = tokio::task::spawn_blocking(|| {
+            let mut apps = Vec::new();
+            if let Ok(entries) = std::fs::read_dir("/usr/share/applications") {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
+                        continue;
+                    }
+                    let content = std::fs::read_to_string(&path).unwrap_or_default();
+                    let name = content.lines()
+                        .find(|l| l.starts_with("Name="))
+                        .map(|l| l.trim_start_matches("Name=").to_string())
+                        .unwrap_or_default();
+                    let exec = content.lines()
+                        .find(|l| l.starts_with("Exec="))
+                        .map(|l| l.trim_start_matches("Exec=").to_string());
+                    let cat = content.lines()
+                        .find(|l| l.starts_with("Categories="))
+                        .map(|l| l.trim_start_matches("Categories=").to_string());
+                    if !name.is_empty() {
+                        apps.push(InstalledApp {
+                            name,
+                            executable: exec,
+                            version: None,
+                            category: cat,
+                        });
+                    }
+                }
+            }
+            apps
+        }).await.unwrap_or_default();
+        Ok(apps)
+    }
+
+    async fn selected_text(&self) -> Result<Option<String>> {
+        if self.session_type == SessionType::X11 {
+            if let Ok(output) = tokio::process::Command::new("xclip")
+                .args(["-selection", "primary", "-o"])
+                .output().await
+            {
+                let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !text.is_empty() {
+                    return Ok(Some(text));
+                }
+            }
+        }
+        Ok(None)
+    }
 }

@@ -109,4 +109,20 @@ impl PlatformBackend for WindowsBackend {
     async fn notifications(&self) -> Result<Vec<NotificationInfo>> {
         Ok(vec![])
     }
+
+    async fn keyboard_focus(&self) -> Result<FocusInfo> {
+        Ok(FocusInfo {
+            element_type: "window".to_string(),
+            description: None,
+            window_id: None,
+        })
+    }
+
+    async fn installed_apps(&self) -> Result<Vec<InstalledApp>> {
+        Ok(vec![])
+    }
+
+    async fn selected_text(&self) -> Result<Option<String>> {
+        Ok(None)
+    }
 }
